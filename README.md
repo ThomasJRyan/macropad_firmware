@@ -2,6 +2,15 @@
 
 Firmware for a Raspberry Pi Pico W macropad.
 
+## Current Behavior
+
+- GP6: active-low button with internal pull-up; press once to blink the onboard
+  LED 5 times at 0.25 second intervals.
+- GP7: active-low button with internal pull-up; press once to blink the onboard
+  LED 5 times at 1 second intervals.
+- Holding a button does not retrigger the blink sequence. Release and press the
+  button again to trigger another sequence.
+
 ## Prerequisites
 
 - CMake
