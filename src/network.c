@@ -1010,9 +1010,7 @@ static err_t mdns_server_start(void) {
     const s8_t service = mdns_resp_add_service(
         netif, "Macropad", "_http", DNSSD_PROTO_TCP, HTTP_PORT,
         mdns_http_txt, NULL);
-    if (service < 0) {
-        return (err_t)service;
-    }
+    (void)service;
 
     mdns_resp_announce(netif);
     return ERR_OK;
@@ -1054,9 +1052,9 @@ static err_t network_start_station(const app_config_t *config) {
 
     cyw43_arch_lwip_begin();
 
-    err_t err = mdns_server_start();
+    err_t err = http_server_start();
     if (err == ERR_OK) {
-        err = http_server_start();
+        (void)mdns_server_start();
     }
 
     cyw43_arch_lwip_end();
