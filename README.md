@@ -4,6 +4,12 @@ Firmware for a Raspberry Pi Pico W macropad.
 
 ## Current Behavior
 
+- On boot, the Pico W starts an open Wi-Fi access point named
+  `macropad_setup`.
+- The AP uses `172.16.4.1/24`.
+- The DHCP server offers `172.16.4.2` to the first client.
+- The HTTP server listens on `http://172.16.4.1/` and serves a page that says
+  `Hello World`.
 - GP5: active-low button with internal pull-up; press once to blink the onboard
   LED 5 times at 0.25 second intervals.
 - GP6: active-low button with internal pull-up; press once to blink the onboard

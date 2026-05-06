@@ -14,12 +14,28 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 pico_sdk_init()
 
 add_executable(macropad_3
+    ${PICO_SDK_PATH}/lib/tinyusb/lib/networking/dhserver.c
+    src/button.c
+    src/led_blink.c
     src/main.c
+    src/network.c
+)
+
+target_include_directories(macropad_3 PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}/src
+    ${PICO_SDK_PATH}/lib/tinyusb/lib/networking
+)
+
+target_compile_definitions(macropad_3 PRIVATE
+    CYW43_DEFAULT_IP_AP_ADDRESS=0xAC100401
+    CYW43_DEFAULT_IP_AP_GATEWAY=0xAC100401
+    CYW43_DEFAULT_IP_MASK=0xFFFFFF00
+    CYW43_DEFAULT_IP_DNS=0x00000000
 )
 
 target_link_libraries(macropad_3
     pico_stdlib
-    pico_cyw43_arch_none
+    pico_cyw43_arch_lwip_threadsafe_background
 )
 
 pico_enable_stdio_usb(macropad_3 1)
