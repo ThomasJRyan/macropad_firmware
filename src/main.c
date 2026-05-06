@@ -15,6 +15,15 @@
 #define FAST_BLINK_INTERVAL_MS 250
 #define SLOW_BLINK_INTERVAL_MS 1000
 
+static void blink_sequence_start_from_config(blink_sequence_t *sequence) {
+    const app_config_t config = app_config_get();
+    const uint32_t interval_ms = app_config_interval_ms(&config);
+
+    if (config.blink_count > 0 && interval_ms > 0) {
+        blink_sequence_start(sequence, interval_ms, config.blink_count);
+    }
+}
+
 int main(void) {
     stdio_init_all();
     app_config_init();
@@ -36,6 +45,7 @@ int main(void) {
 
     button_init(&fast_button, BUTTON_FAST_PIN);
     button_init(&slow_button, BUTTON_SLOW_PIN);
+    blink_sequence_start_from_config(&led_sequence);
 
     while (true) {
         const bool web_blink_requested = blink_request_take_web();
@@ -43,12 +53,7 @@ int main(void) {
         const bool slow_pressed = button_update(&slow_button);
 
         if (web_blink_requested) {
-            const app_config_t config = app_config_get();
-            const uint32_t interval_ms = app_config_interval_ms(&config);
-            if (config.blink_count > 0 && interval_ms > 0) {
-                blink_sequence_start(&led_sequence, interval_ms,
-                                     config.blink_count);
-            }
+            blink_sequence_start_from_config(&led_sequence);
         } else if (fast_pressed) {
             blink_sequence_start(&led_sequence, FAST_BLINK_INTERVAL_MS,
                                  BLINK_COUNT);

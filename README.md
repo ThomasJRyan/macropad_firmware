@@ -13,6 +13,8 @@ Firmware for a Raspberry Pi Pico W macropad.
 - The page has numeric configuration inputs for blink count and blink frequency,
   defaulting to `0` and `0.0`.
 - Configuration is saved to flash and loaded across boots.
+- On boot, the onboard LED runs the saved blink sequence once when both saved
+  values are nonzero.
 - `GET /api/config` returns the saved configuration.
 - `POST /api/config` saves `blinks` and `frequency` form values.
 - `POST /api/blink` queues the web-triggered LED blink sequence using the saved
