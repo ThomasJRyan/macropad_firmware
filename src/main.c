@@ -5,6 +5,9 @@
 #include "network.h"
 #include "pico/cyw43_arch.h"
 #include "pico/stdlib.h"
+#include "pico/stdio_usb.h"
+
+#include <stdio.h>
 
 #define BUTTON_FAST_PIN 5
 #define BUTTON_SLOW_PIN 6
@@ -16,6 +19,7 @@
 #define SLOW_BLINK_INTERVAL_MS 1000
 #define STATUS_BLINK_INTERVAL_MS 100
 #define STATUS_SUCCESS_BLINK_COUNT 3
+#define USB_STDIO_WAIT_MS 15000
 
 static void blink_sequence_start_from_config(blink_sequence_t *sequence) {
     const app_config_t config = app_config_get();
@@ -26,8 +30,25 @@ static void blink_sequence_start_from_config(blink_sequence_t *sequence) {
     }
 }
 
+static void print_running_forever(void) {
+    while (true) {
+        printf("Running...\n");
+        fflush(stdout);
+        sleep_ms(1000);
+    }
+}
+
 int main(void) {
     stdio_init_all();
+
+    const absolute_time_t usb_stdio_deadline =
+        make_timeout_time_ms(USB_STDIO_WAIT_MS);
+    while (!stdio_usb_connected() && !time_reached(usb_stdio_deadline)) {
+        sleep_ms(10);
+    }
+
+    print_running_forever();
+
     app_config_init();
     blink_request_init();
 
@@ -76,6 +97,7 @@ int main(void) {
         }
 
         blink_sequence_update(&led_sequence);
+
         if (saved_boot_blink_pending && !led_sequence.active) {
             saved_boot_blink_pending = false;
             blink_sequence_start_from_config(&led_sequence);
