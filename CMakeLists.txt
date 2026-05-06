@@ -39,6 +39,7 @@ target_compile_definitions(macropad_3 PRIVATE
 target_link_libraries(macropad_3
     hardware_flash
     pico_flash
+    pico_lwip_mdns
     pico_stdlib
     pico_cyw43_arch_lwip_threadsafe_background
 )

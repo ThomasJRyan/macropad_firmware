@@ -4,7 +4,14 @@ Firmware for a Raspberry Pi Pico W macropad.
 
 ## Current Behavior
 
-- On boot, the Pico W starts an open Wi-Fi access point named
+- On boot, the Pico W attempts to connect to the saved Wi-Fi network when an
+  SSID has been configured.
+- A successful Wi-Fi connection uses DHCP, advertises `macropad.local` with
+  mDNS, and serves the HTTP UI on the assigned network address.
+- A successful Wi-Fi connection blinks the onboard LED 3 times quickly.
+- A failed Wi-Fi connection falls back to setup AP mode and blinks the onboard
+  LED quickly until another LED sequence is triggered.
+- Without a saved SSID, the Pico W starts an open Wi-Fi access point named
   `macropad_setup`.
 - The AP uses `172.16.4.1/24`.
 - The DHCP server offers `172.16.4.2` to the first client.
@@ -12,13 +19,18 @@ Firmware for a Raspberry Pi Pico W macropad.
   `Hello World`.
 - The page has numeric configuration inputs for blink count and blink frequency,
   defaulting to `0` and `0.0`.
+- The page can scan nearby Wi-Fi access points and save an SSID/password to
+  flash.
 - Configuration is saved to flash and loaded across boots.
 - On boot, the onboard LED runs the saved blink sequence once when both saved
-  values are nonzero.
+  values are nonzero. Wi-Fi status blinks run first when station mode is used.
 - `GET /api/config` returns the saved configuration.
 - `POST /api/config` saves `blinks` and `frequency` form values.
 - `POST /api/blink` queues the web-triggered LED blink sequence using the saved
   configuration.
+- `GET /api/wifi/scan` returns the latest scan status and nearby network list.
+- `POST /api/wifi/scan` starts a Wi-Fi scan.
+- `POST /api/wifi` saves `ssid` and `password` form values.
 - GP5: active-low button with internal pull-up; press once to blink the onboard
   LED 5 times at 0.25 second intervals.
 - GP6: active-low button with internal pull-up; press once to blink the onboard

@@ -8,6 +8,7 @@
 
 typedef struct {
     bool active;
+    bool forever;
     bool led_on;
     uint32_t interval_ms;
     uint32_t blinks_remaining;
@@ -17,6 +18,8 @@ typedef struct {
 void led_set(bool enabled);
 void blink_sequence_start(blink_sequence_t *sequence, uint32_t interval_ms,
                           uint32_t blink_count);
+void blink_sequence_start_forever(blink_sequence_t *sequence,
+                                  uint32_t interval_ms);
 void blink_sequence_update(blink_sequence_t *sequence);
 
 #endif

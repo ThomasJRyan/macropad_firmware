@@ -2,6 +2,7 @@
 
 #include <stdbool.h>
 #include <stdarg.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -9,19 +10,25 @@
 #include "blink_request.h"
 #include "cyw43.h"
 #include "dhserver.h"
+#include "lwip/apps/mdns.h"
 #include "lwip/ip4_addr.h"
+#include "lwip/netif.h"
 #include "lwip/tcp.h"
+#include "pico/critical_section.h"
 #include "pico/cyw43_arch.h"
 
 #define HTTP_PORT 80
 #define HTTP_BACKLOG 4
 #define HTTP_POLL_INTERVAL 10
-#define HTTP_REQUEST_MAX 768
-#define HTTP_RESPONSE_MAX 1536
+#define HTTP_REQUEST_MAX 1024
+#define HTTP_RESPONSE_MAX 6144
 
 #define DHCP_SERVER_PORT 67
 #define DHCP_LEASE_SECONDS (24 * 60 * 60)
 #define DHCP_POOL_SIZE 1
+
+#define WIFI_SCAN_MAX_RESULTS 16
+#define WIFI_CONNECT_TIMEOUT_MS 15000
 
 typedef struct {
     bool in_use;
@@ -29,6 +36,13 @@ typedef struct {
     char request[HTTP_REQUEST_MAX];
     char response[HTTP_RESPONSE_MAX];
 } http_connection_t;
+
+typedef struct {
+    char ssid[APP_CONFIG_WIFI_SSID_MAX + 1u];
+    uint8_t auth_mode;
+    uint16_t channel;
+    int16_t rssi;
+} wifi_scan_result_t;
 
 static const char index_response_template[] =
     "HTTP/1.0 200 OK\r\n"
@@ -42,7 +56,7 @@ static const char index_response_template[] =
     "<title>Macropad Setup</title>"
     "</head>"
     "<body>"
-    "<h1>Hello World</h1>"
+    "<h1>%s</h1>"
     "<form id=\"config\">"
     "<label>Blinks "
     "<input name=\"blinks\" type=\"number\" min=\"0\" max=\"100\" step=\"1\" "
@@ -55,20 +69,57 @@ static const char index_response_template[] =
     "<button type=\"submit\">Save</button>"
     "</form>"
     "<button type=\"button\" id=\"blink\">Blink LED</button>"
+    "<section>"
+    "<h2>Wi-Fi</h2>"
+    "<button type=\"button\" id=\"scan\">Scan</button>"
+    "<form id=\"wifi\">"
+    "<label>Network <select id=\"networks\" name=\"ssid\"></select></label>"
+    "<label>Password <input name=\"password\" type=\"password\" "
+    "maxlength=\"63\"></label>"
+    "<button type=\"submit\">Save Wi-Fi</button>"
+    "</form>"
+    "</section>"
     "<p id=\"status\"></p>"
     "<script>"
     "const s=document.getElementById('status');"
+    "const n=document.getElementById('networks');"
+    "function status(t){s.textContent=t;}"
+    "async function refreshScan(){"
+    "const r=await fetch('/api/wifi/scan');"
+    "const j=await r.json();"
+    "n.innerHTML='';"
+    "j.networks.forEach(function(ap){"
+    "const o=document.createElement('option');"
+    "o.value=ap.ssid;"
+    "o.textContent=ap.ssid+' ('+ap.rssi+' dBm)';"
+    "n.appendChild(o);"
+    "});"
+    "if(j.scanning){status('Scanning...');setTimeout(refreshScan,1000);}"
+    "else{status(j.networks.length?'Scan complete':'No networks found');}"
+    "}"
     "document.getElementById('config').addEventListener('submit',async "
     "function(e){"
     "e.preventDefault();"
     "const r=await fetch('/api/config',{method:'POST',headers:{"
     "'Content-Type':'application/x-www-form-urlencoded'},"
     "body:new URLSearchParams(new FormData(this))});"
-    "s.textContent=r.ok?'Saved':'Save failed';"
+    "status(r.ok?'Saved':'Save failed');"
     "});"
     "document.getElementById('blink').addEventListener('click',async "
+    "function(){await fetch('/api/blink',{method:'POST'});});"
+    "document.getElementById('scan').addEventListener('click',async "
     "function(){"
-    "await fetch('/api/blink',{method:'POST'});"
+    "status('Scanning...');"
+    "await fetch('/api/wifi/scan',{method:'POST'});"
+    "refreshScan();"
+    "});"
+    "document.getElementById('wifi').addEventListener('submit',async "
+    "function(e){"
+    "e.preventDefault();"
+    "const r=await fetch('/api/wifi',{method:'POST',headers:{"
+    "'Content-Type':'application/x-www-form-urlencoded'},"
+    "body:new URLSearchParams(new FormData(this))});"
+    "status(r.ok?'Wi-Fi saved':'Wi-Fi save failed');"
     "});"
     "</script>"
     "</body>"
@@ -81,12 +132,26 @@ static const char blink_response[] =
     "\r\n"
     "{\"status\":\"queued\"}\n";
 
+static const char wifi_saved_response[] =
+    "HTTP/1.0 200 OK\r\n"
+    "Content-Type: application/json\r\n"
+    "Connection: close\r\n"
+    "\r\n"
+    "{\"status\":\"saved\"}\n";
+
 static const char bad_request_response[] =
     "HTTP/1.0 400 Bad Request\r\n"
     "Content-Type: application/json\r\n"
     "Connection: close\r\n"
     "\r\n"
-    "{\"error\":\"invalid_config\"}\n";
+    "{\"error\":\"bad_request\"}\n";
+
+static const char scan_error_response[] =
+    "HTTP/1.0 500 Internal Server Error\r\n"
+    "Content-Type: application/json\r\n"
+    "Connection: close\r\n"
+    "\r\n"
+    "{\"error\":\"scan_failed\"}\n";
 
 static const char server_error_response[] =
     "HTTP/1.0 500 Internal Server Error\r\n"
@@ -121,6 +186,13 @@ static struct tcp_pcb *http_listener;
 static http_connection_t http_connections[HTTP_BACKLOG];
 static dhcp_entry_t dhcp_entries[DHCP_POOL_SIZE];
 static dhcp_config_t dhcp_config;
+static network_mode_t current_mode = NETWORK_MODE_SETUP_AP;
+static bool mdns_initialized;
+static critical_section_t wifi_scan_lock;
+static bool wifi_scan_lock_initialized;
+static bool wifi_scan_running;
+static wifi_scan_result_t wifi_scan_results[WIFI_SCAN_MAX_RESULTS];
+static size_t wifi_scan_count;
 
 static size_t http_format(char *response, size_t response_size,
                           const char *format, ...) {
@@ -140,6 +212,56 @@ static size_t http_format(char *response, size_t response_size,
     }
 
     return (size_t)written;
+}
+
+static bool http_append(char *response, size_t response_size, size_t *length,
+                        const char *format, ...) {
+    if (*length >= response_size) {
+        return false;
+    }
+
+    va_list args;
+    va_start(args, format);
+    const int written =
+        vsnprintf(response + *length, response_size - *length, format, args);
+    va_end(args);
+
+    if (written < 0) {
+        return false;
+    }
+
+    if ((size_t)written >= response_size - *length) {
+        *length = response_size - 1u;
+        response[*length] = '\0';
+        return false;
+    }
+
+    *length += (size_t)written;
+    return true;
+}
+
+static bool json_append_string(char *response, size_t response_size,
+                               size_t *length, const char *value) {
+    if (!http_append(response, response_size, length, "\"")) {
+        return false;
+    }
+
+    for (size_t i = 0; value[i] != '\0'; i++) {
+        const unsigned char ch = (unsigned char)value[i];
+        if (ch == '"' || ch == '\\') {
+            if (!http_append(response, response_size, length, "\\%c", ch)) {
+                return false;
+            }
+        } else if (ch < 0x20u) {
+            if (!http_append(response, response_size, length, "\\u%04x", ch)) {
+                return false;
+            }
+        } else if (!http_append(response, response_size, length, "%c", ch)) {
+            return false;
+        }
+    }
+
+    return http_append(response, response_size, length, "\"");
 }
 
 static http_connection_t *http_connection_alloc(void) {
@@ -304,6 +426,54 @@ static const char *http_request_query(const char *request) {
     return query + 1;
 }
 
+static int hex_value(char ch) {
+    if (ch >= '0' && ch <= '9') {
+        return ch - '0';
+    }
+    if (ch >= 'a' && ch <= 'f') {
+        return ch - 'a' + 10;
+    }
+    if (ch >= 'A' && ch <= 'F') {
+        return ch - 'A' + 10;
+    }
+
+    return -1;
+}
+
+static bool http_url_decode(const char *source, size_t source_length,
+                            char *value, size_t value_size) {
+    size_t out = 0;
+
+    for (size_t i = 0; i < source_length; i++) {
+        char ch = source[i];
+        if (ch == '+') {
+            ch = ' ';
+        } else if (ch == '%') {
+            if (i + 2u >= source_length) {
+                return false;
+            }
+
+            const int high = hex_value(source[i + 1u]);
+            const int low = hex_value(source[i + 2u]);
+            if (high < 0 || low < 0) {
+                return false;
+            }
+
+            ch = (char)((high << 4) | low);
+            i += 2u;
+        }
+
+        if (ch == '\0' || out + 1u >= value_size) {
+            return false;
+        }
+
+        value[out++] = ch;
+    }
+
+    value[out] = '\0';
+    return true;
+}
+
 static bool http_param_value(const char *params, const char *name, char *value,
                              size_t value_size) {
     if (params == NULL) {
@@ -325,13 +495,7 @@ static bool http_param_value(const char *params, const char *name, char *value,
                 length++;
             }
 
-            if (length >= value_size) {
-                return false;
-            }
-
-            memcpy(value, param_value, length);
-            value[length] = '\0';
-            return true;
+            return http_url_decode(param_value, length, value, value_size);
         }
 
         cursor = strchr(cursor, '&');
@@ -410,36 +574,220 @@ static bool http_parse_config(const char *request, app_config_t *config) {
         http_param_value(query, "frequency", frequency_value,
                          sizeof(frequency_value));
 
-    if (!has_blinks || !has_frequency) {
+    uint32_t blink_count = 0;
+    uint32_t frequency_tenths = 0;
+    if (!has_blinks || !has_frequency ||
+        !parse_uint32_value(blinks_value, &blink_count) ||
+        !parse_frequency_tenths(frequency_value, &frequency_tenths)) {
         return false;
     }
 
-    return parse_uint32_value(blinks_value, &config->blink_count) &&
-           parse_frequency_tenths(frequency_value,
-                                  &config->frequency_tenths) &&
-           app_config_validate(config);
+    app_config_t candidate = *config;
+    candidate.blink_count = blink_count;
+    candidate.frequency_tenths = frequency_tenths;
+    if (!app_config_validate(&candidate)) {
+        return false;
+    }
+
+    *config = candidate;
+    return true;
+}
+
+static bool http_parse_wifi_config(const char *request, app_config_t *config) {
+    char ssid[APP_CONFIG_WIFI_SSID_MAX + 1u];
+    char password[APP_CONFIG_WIFI_PASSWORD_MAX + 1u];
+    const char *body = http_request_body(request);
+    const char *query = http_request_query(request);
+
+    const bool has_ssid =
+        http_param_value(body, "ssid", ssid, sizeof(ssid)) ||
+        http_param_value(query, "ssid", ssid, sizeof(ssid));
+    const bool has_password =
+        http_param_value(body, "password", password, sizeof(password)) ||
+        http_param_value(query, "password", password, sizeof(password));
+
+    if (!has_ssid || !has_password || ssid[0] == '\0') {
+        return false;
+    }
+
+    app_config_t candidate = *config;
+    memset(candidate.wifi_ssid, 0, sizeof(candidate.wifi_ssid));
+    memset(candidate.wifi_password, 0, sizeof(candidate.wifi_password));
+    memcpy(candidate.wifi_ssid, ssid, strlen(ssid));
+    memcpy(candidate.wifi_password, password, strlen(password));
+
+    if (!app_config_validate(&candidate)) {
+        return false;
+    }
+
+    *config = candidate;
+    return true;
 }
 
 static size_t http_build_config_response(char *response, size_t response_size,
                                          const app_config_t *config) {
-    return http_format(response, response_size,
-                       "HTTP/1.0 200 OK\r\n"
-                       "Content-Type: application/json\r\n"
-                       "Connection: close\r\n"
-                       "\r\n"
-                       "{\"blinks\":%lu,\"frequency\":%lu.%lu}\n",
-                       (unsigned long)config->blink_count,
-                       (unsigned long)(config->frequency_tenths / 10u),
-                       (unsigned long)(config->frequency_tenths % 10u));
+    size_t length = http_format(
+        response, response_size,
+        "HTTP/1.0 200 OK\r\n"
+        "Content-Type: application/json\r\n"
+        "Connection: close\r\n"
+        "\r\n"
+        "{\"blinks\":%lu,\"frequency\":%lu.%lu,\"wifi_configured\":%s,"
+        "\"wifi_ssid\":",
+        (unsigned long)config->blink_count,
+        (unsigned long)(config->frequency_tenths / 10u),
+        (unsigned long)(config->frequency_tenths % 10u),
+        app_config_has_wifi_credentials(config) ? "true" : "false");
+
+    json_append_string(response, response_size, &length, config->wifi_ssid);
+    http_append(response, response_size, &length, "}\n");
+    return length;
 }
 
 static size_t http_build_index_response(char *response, size_t response_size) {
     const app_config_t config = app_config_get();
+    const char *heading =
+        current_mode == NETWORK_MODE_STATION ? "connect to network"
+                                             : "Hello World";
 
     return http_format(response, response_size, index_response_template,
-                       (unsigned long)config.blink_count,
+                       heading, (unsigned long)config.blink_count,
                        (unsigned long)(config.frequency_tenths / 10u),
                        (unsigned long)(config.frequency_tenths % 10u));
+}
+
+static void wifi_scan_state_init(void) {
+    if (!wifi_scan_lock_initialized) {
+        critical_section_init(&wifi_scan_lock);
+        wifi_scan_lock_initialized = true;
+    }
+}
+
+static int wifi_scan_result_cb(void *env,
+                               const cyw43_ev_scan_result_t *result) {
+    (void)env;
+
+    if (result->ssid_len == 0 ||
+        result->ssid_len > APP_CONFIG_WIFI_SSID_MAX) {
+        return 0;
+    }
+
+    char ssid[APP_CONFIG_WIFI_SSID_MAX + 1u];
+    memcpy(ssid, result->ssid, result->ssid_len);
+    ssid[result->ssid_len] = '\0';
+
+    critical_section_enter_blocking(&wifi_scan_lock);
+
+    for (size_t i = 0; i < wifi_scan_count; i++) {
+        if (strcmp(wifi_scan_results[i].ssid, ssid) == 0) {
+            if (result->rssi > wifi_scan_results[i].rssi) {
+                wifi_scan_results[i].auth_mode = result->auth_mode;
+                wifi_scan_results[i].channel = result->channel;
+                wifi_scan_results[i].rssi = result->rssi;
+            }
+            critical_section_exit(&wifi_scan_lock);
+            return 0;
+        }
+    }
+
+    if (wifi_scan_count < WIFI_SCAN_MAX_RESULTS) {
+        wifi_scan_result_t *slot = &wifi_scan_results[wifi_scan_count++];
+        memset(slot, 0, sizeof(*slot));
+        memcpy(slot->ssid, ssid, sizeof(slot->ssid));
+        slot->auth_mode = result->auth_mode;
+        slot->channel = result->channel;
+        slot->rssi = result->rssi;
+    }
+
+    critical_section_exit(&wifi_scan_lock);
+    return 0;
+}
+
+static void wifi_scan_refresh_status(void) {
+    if (wifi_scan_running && !cyw43_wifi_scan_active(&cyw43_state)) {
+        critical_section_enter_blocking(&wifi_scan_lock);
+        wifi_scan_running = false;
+        critical_section_exit(&wifi_scan_lock);
+    }
+}
+
+static void wifi_scan_ensure_sta_mode(void) {
+    if ((cyw43_state.itf_state & (1u << CYW43_ITF_STA)) == 0) {
+        cyw43_arch_enable_sta_mode();
+        if (current_mode == NETWORK_MODE_SETUP_AP) {
+            cyw43_arch_lwip_begin();
+            netif_set_default(&cyw43_state.netif[CYW43_ITF_AP]);
+            cyw43_arch_lwip_end();
+        }
+    }
+}
+
+static err_t wifi_scan_start(void) {
+    wifi_scan_state_init();
+    wifi_scan_refresh_status();
+
+    if (wifi_scan_running) {
+        return ERR_OK;
+    }
+
+    critical_section_enter_blocking(&wifi_scan_lock);
+    memset(wifi_scan_results, 0, sizeof(wifi_scan_results));
+    wifi_scan_count = 0;
+    wifi_scan_running = true;
+    critical_section_exit(&wifi_scan_lock);
+
+    cyw43_wifi_scan_options_t options;
+    memset(&options, 0, sizeof(options));
+    wifi_scan_ensure_sta_mode();
+    const int scan_err =
+        cyw43_wifi_scan(&cyw43_state, &options, NULL, wifi_scan_result_cb);
+    if (scan_err != 0) {
+        critical_section_enter_blocking(&wifi_scan_lock);
+        wifi_scan_running = false;
+        critical_section_exit(&wifi_scan_lock);
+        return ERR_CONN;
+    }
+
+    return ERR_OK;
+}
+
+static size_t http_build_scan_response(char *response, size_t response_size) {
+    wifi_scan_state_init();
+    wifi_scan_refresh_status();
+
+    wifi_scan_result_t results[WIFI_SCAN_MAX_RESULTS];
+    size_t result_count = 0;
+    bool scanning = false;
+
+    critical_section_enter_blocking(&wifi_scan_lock);
+    result_count = wifi_scan_count;
+    scanning = wifi_scan_running;
+    memcpy(results, wifi_scan_results, sizeof(results));
+    critical_section_exit(&wifi_scan_lock);
+
+    size_t length = http_format(response, response_size,
+                                "HTTP/1.0 200 OK\r\n"
+                                "Content-Type: application/json\r\n"
+                                "Connection: close\r\n"
+                                "\r\n"
+                                "{\"scanning\":%s,\"networks\":[",
+                                scanning ? "true" : "false");
+
+    for (size_t i = 0; i < result_count; i++) {
+        if (i > 0) {
+            http_append(response, response_size, &length, ",");
+        }
+        http_append(response, response_size, &length, "{\"ssid\":");
+        json_append_string(response, response_size, &length, results[i].ssid);
+        http_append(response, response_size, &length,
+                    ",\"rssi\":%d,\"channel\":%u,\"secure\":%s}",
+                    (int)results[i].rssi, (unsigned int)results[i].channel,
+                    results[i].auth_mode == CYW43_AUTH_OPEN ? "false"
+                                                            : "true");
+    }
+
+    http_append(response, response_size, &length, "]}\n");
+    return length;
 }
 
 static size_t http_copy_response(char *response, size_t response_size,
@@ -459,7 +807,7 @@ static size_t http_build_response(const char *request, char *response,
     }
 
     if (http_request_matches(request, "POST", "/api/config")) {
-        app_config_t config;
+        app_config_t config = app_config_get();
         if (!http_parse_config(request, &config)) {
             return http_copy_response(response, response_size,
                                       bad_request_response);
@@ -478,8 +826,38 @@ static size_t http_build_response(const char *request, char *response,
         return http_copy_response(response, response_size, blink_response);
     }
 
+    if (http_request_matches(request, "GET", "/api/wifi/scan")) {
+        return http_build_scan_response(response, response_size);
+    }
+
+    if (http_request_matches(request, "POST", "/api/wifi/scan")) {
+        if (wifi_scan_start() != ERR_OK) {
+            return http_copy_response(response, response_size,
+                                      scan_error_response);
+        }
+
+        return http_build_scan_response(response, response_size);
+    }
+
+    if (http_request_matches(request, "POST", "/api/wifi")) {
+        app_config_t config = app_config_get();
+        if (!http_parse_wifi_config(request, &config)) {
+            return http_copy_response(response, response_size,
+                                      bad_request_response);
+        }
+
+        if (!app_config_save(&config)) {
+            return http_copy_response(response, response_size,
+                                      server_error_response);
+        }
+
+        return http_copy_response(response, response_size, wifi_saved_response);
+    }
+
     if (http_path_matches(request, "/api/config") ||
-        http_path_matches(request, "/api/blink")) {
+        http_path_matches(request, "/api/blink") ||
+        http_path_matches(request, "/api/wifi") ||
+        http_path_matches(request, "/api/wifi/scan")) {
         return http_copy_response(response, response_size,
                                   method_not_allowed_response);
     }
@@ -611,7 +989,37 @@ static err_t dhcp_server_start(void) {
     return dhserv_init(&dhcp_config);
 }
 
-err_t network_start(void) {
+static void mdns_http_txt(struct mdns_service *service, void *txt_userdata) {
+    (void)txt_userdata;
+    mdns_resp_add_service_txtitem(service, "path=/", 6);
+}
+
+static err_t mdns_server_start(void) {
+    struct netif *netif = &cyw43_state.netif[CYW43_ITF_STA];
+
+    if (!mdns_initialized) {
+        mdns_resp_init();
+        mdns_initialized = true;
+    }
+
+    err_t err = mdns_resp_add_netif(netif, MACROPAD_MDNS_HOSTNAME);
+    if (err != ERR_OK) {
+        return err;
+    }
+
+    const s8_t service = mdns_resp_add_service(
+        netif, "Macropad", "_http", DNSSD_PROTO_TCP, HTTP_PORT,
+        mdns_http_txt, NULL);
+    if (service < 0) {
+        return (err_t)service;
+    }
+
+    mdns_resp_announce(netif);
+    return ERR_OK;
+}
+
+static err_t network_start_setup_ap(void) {
+    current_mode = NETWORK_MODE_SETUP_AP;
     cyw43_arch_enable_ap_mode(MACROPAD_AP_SSID, NULL, CYW43_AUTH_OPEN);
 
     cyw43_arch_lwip_begin();
@@ -628,4 +1036,61 @@ err_t network_start(void) {
     cyw43_arch_lwip_end();
 
     return err;
+}
+
+static err_t network_start_station(const app_config_t *config) {
+    current_mode = NETWORK_MODE_STATION;
+    cyw43_arch_enable_sta_mode();
+
+    const char *password =
+        config->wifi_password[0] == '\0' ? NULL : config->wifi_password;
+    const int connect_err = cyw43_arch_wifi_connect_timeout_ms(
+        config->wifi_ssid, password, CYW43_AUTH_WPA2_MIXED_PSK,
+        WIFI_CONNECT_TIMEOUT_MS);
+    if (connect_err != PICO_OK) {
+        cyw43_arch_disable_sta_mode();
+        return ERR_CONN;
+    }
+
+    cyw43_arch_lwip_begin();
+
+    err_t err = mdns_server_start();
+    if (err == ERR_OK) {
+        err = http_server_start();
+    }
+
+    cyw43_arch_lwip_end();
+
+    return err;
+}
+
+network_start_result_t network_start(void) {
+    wifi_scan_state_init();
+
+    network_start_result_t result = {
+        .err = ERR_OK,
+        .mode = NETWORK_MODE_SETUP_AP,
+        .status = NETWORK_START_SETUP_AP,
+    };
+
+    const app_config_t config = app_config_get();
+    if (app_config_has_wifi_credentials(&config)) {
+        result.mode = NETWORK_MODE_STATION;
+        result.err = network_start_station(&config);
+        if (result.err == ERR_OK) {
+            result.status = NETWORK_START_STATION_CONNECTED;
+            return result;
+        }
+
+        if (result.err != ERR_CONN) {
+            result.status = NETWORK_START_STATION_FAILED;
+            return result;
+        }
+
+        result.mode = NETWORK_MODE_SETUP_AP;
+        result.status = NETWORK_START_STATION_FAILED;
+    }
+
+    result.err = network_start_setup_ap();
+    return result;
 }

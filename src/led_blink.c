@@ -10,15 +10,29 @@ void blink_sequence_start(blink_sequence_t *sequence, uint32_t interval_ms,
                           uint32_t blink_count) {
     if (blink_count == 0) {
         sequence->active = false;
+        sequence->forever = false;
         sequence->led_on = false;
         led_set(false);
         return;
     }
 
     sequence->active = true;
+    sequence->forever = false;
     sequence->led_on = true;
     sequence->interval_ms = interval_ms;
     sequence->blinks_remaining = blink_count;
+    sequence->next_toggle_at = make_timeout_time_ms(interval_ms);
+
+    led_set(true);
+}
+
+void blink_sequence_start_forever(blink_sequence_t *sequence,
+                                  uint32_t interval_ms) {
+    sequence->active = true;
+    sequence->forever = true;
+    sequence->led_on = true;
+    sequence->interval_ms = interval_ms;
+    sequence->blinks_remaining = 0;
     sequence->next_toggle_at = make_timeout_time_ms(interval_ms);
 
     led_set(true);
@@ -33,10 +47,12 @@ void blink_sequence_update(blink_sequence_t *sequence) {
         sequence->led_on = false;
         led_set(false);
 
-        sequence->blinks_remaining--;
-        if (sequence->blinks_remaining == 0) {
-            sequence->active = false;
-            return;
+        if (!sequence->forever) {
+            sequence->blinks_remaining--;
+            if (sequence->blinks_remaining == 0) {
+                sequence->active = false;
+                return;
+            }
         }
     } else {
         sequence->led_on = true;
