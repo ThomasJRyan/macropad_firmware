@@ -2,6 +2,7 @@
 
 #include <string.h>
 
+#include "blink_request.h"
 #include "cyw43.h"
 #include "dhserver.h"
 #include "lwip/ip4_addr.h"
@@ -11,17 +12,55 @@
 #define HTTP_PORT 80
 #define HTTP_BACKLOG 4
 #define HTTP_POLL_INTERVAL 10
+#define HTTP_REQUEST_MAX 256
 
 #define DHCP_SERVER_PORT 67
 #define DHCP_LEASE_SECONDS (24 * 60 * 60)
 #define DHCP_POOL_SIZE 1
 
-static const char http_response[] =
+static const char index_response[] =
     "HTTP/1.0 200 OK\r\n"
     "Content-Type: text/html; charset=utf-8\r\n"
     "Connection: close\r\n"
     "\r\n"
-    "<!doctype html><html><body>Hello World</body></html>";
+    "<!doctype html>"
+    "<html>"
+    "<head>"
+    "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+    "<title>Macropad Setup</title>"
+    "</head>"
+    "<body>"
+    "<h1>Hello World</h1>"
+    "<button type=\"button\" id=\"blink\">Blink LED</button>"
+    "<script>"
+    "document.getElementById('blink').addEventListener('click',function(){"
+    "fetch('/api/blink',{method:'POST'});"
+    "});"
+    "</script>"
+    "</body>"
+    "</html>";
+
+static const char blink_response[] =
+    "HTTP/1.0 202 Accepted\r\n"
+    "Content-Type: application/json\r\n"
+    "Connection: close\r\n"
+    "\r\n"
+    "{\"status\":\"queued\"}\n";
+
+static const char method_not_allowed_response[] =
+    "HTTP/1.0 405 Method Not Allowed\r\n"
+    "Content-Type: text/plain; charset=utf-8\r\n"
+    "Allow: POST\r\n"
+    "Connection: close\r\n"
+    "\r\n"
+    "Method Not Allowed\n";
+
+static const char not_found_response[] =
+    "HTTP/1.0 404 Not Found\r\n"
+    "Content-Type: text/plain; charset=utf-8\r\n"
+    "Connection: close\r\n"
+    "\r\n"
+    "Not Found\n";
 
 static struct tcp_pcb *http_listener;
 static dhcp_entry_t dhcp_entries[DHCP_POOL_SIZE];
@@ -53,9 +92,58 @@ static err_t http_poll(void *arg, struct tcp_pcb *pcb) {
     return http_close(pcb);
 }
 
+static bool http_request_matches(const char *request, const char *method,
+                                 const char *path) {
+    const size_t method_len = strlen(method);
+    const size_t path_len = strlen(path);
+
+    if (strncmp(request, method, method_len) != 0) {
+        return false;
+    }
+
+    const char *request_path = request + method_len;
+    if (*request_path != ' ') {
+        return false;
+    }
+    request_path++;
+
+    return strncmp(request_path, path, path_len) == 0 &&
+           request_path[path_len] == ' ';
+}
+
+static bool http_path_matches(const char *request, const char *path) {
+    const char *request_path = strchr(request, ' ');
+    if (request_path == NULL) {
+        return false;
+    }
+    request_path++;
+
+    const size_t path_len = strlen(path);
+    return strncmp(request_path, path, path_len) == 0 &&
+           request_path[path_len] == ' ';
+}
+
+static const char *http_response_for_request(const char *request) {
+    if (http_request_matches(request, "GET", "/")) {
+        return index_response;
+    }
+
+    if (http_request_matches(request, "POST", "/api/blink")) {
+        blink_request_enqueue_web();
+        return blink_response;
+    }
+
+    if (http_path_matches(request, "/api/blink")) {
+        return method_not_allowed_response;
+    }
+
+    return not_found_response;
+}
+
 static err_t http_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p,
                        err_t err) {
     (void)arg;
+    char request[HTTP_REQUEST_MAX];
 
     if (p == NULL) {
         return http_close(pcb);
@@ -67,9 +155,15 @@ static err_t http_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p,
     }
 
     tcp_recved(pcb, p->tot_len);
+    const u16_t request_len =
+        p->tot_len < sizeof(request) - 1 ? p->tot_len : sizeof(request) - 1;
+    pbuf_copy_partial(p, request, request_len, 0);
+    request[request_len] = '\0';
     pbuf_free(p);
 
-    err = tcp_write(pcb, http_response, strlen(http_response),
+    const char *response = http_response_for_request(request);
+
+    err = tcp_write(pcb, response, strlen(response),
                     TCP_WRITE_FLAG_COPY);
     if (err != ERR_OK) {
         tcp_abort(pcb);
