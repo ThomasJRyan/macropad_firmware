@@ -24,5 +24,6 @@ typedef struct {
 } network_start_result_t;
 
 network_start_result_t network_start(void);
+void network_debug_poll(void);
 
 #endif

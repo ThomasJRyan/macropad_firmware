@@ -16,6 +16,7 @@
 #include "lwip/tcp.h"
 #include "pico/critical_section.h"
 #include "pico/cyw43_arch.h"
+#include "pico/stdlib.h"
 
 #define HTTP_PORT 80
 #define HTTP_BACKLOG 4
@@ -193,6 +194,36 @@ static bool wifi_scan_lock_initialized;
 static bool wifi_scan_running;
 static wifi_scan_result_t wifi_scan_results[WIFI_SCAN_MAX_RESULTS];
 static size_t wifi_scan_count;
+static volatile uint32_t http_accept_count;
+static volatile uint32_t http_recv_count;
+static volatile uint32_t http_response_count;
+static volatile err_t last_http_start_err;
+static volatile err_t last_mdns_start_err;
+static absolute_time_t next_network_debug_at;
+
+static void ip_to_string(const ip_addr_t *addr, char *buffer,
+                         size_t buffer_size) {
+    if (addr == NULL) {
+        snprintf(buffer, buffer_size, "none");
+        return;
+    }
+
+    ipaddr_ntoa_r(addr, buffer, (int)buffer_size);
+}
+
+static void network_log_netif(const char *label, const struct netif *netif) {
+    char ip[16];
+    char mask[16];
+    char gw[16];
+
+    ip_to_string(netif_ip_addr4(netif), ip, sizeof(ip));
+    ip_to_string(netif_ip_netmask4(netif), mask, sizeof(mask));
+    ip_to_string(netif_ip_gw4(netif), gw, sizeof(gw));
+
+    printf("network: %s netif=%c%c%u ip=%s mask=%s gw=%s flags=0x%02x\n",
+           label, netif->name[0], netif->name[1], (unsigned int)netif->num,
+           ip, mask, gw, (unsigned int)netif->flags);
+}
 
 static size_t http_format(char *response, size_t response_size,
                           const char *format, ...) {
@@ -283,6 +314,8 @@ static void http_connection_free(http_connection_t *connection) {
 }
 
 static err_t http_close(struct tcp_pcb *pcb, http_connection_t *connection) {
+    printf("http: closing pcb=%p connection=%p\n", (void *)pcb,
+           (void *)connection);
     tcp_arg(pcb, NULL);
     tcp_recv(pcb, NULL);
     tcp_sent(pcb, NULL);
@@ -292,19 +325,23 @@ static err_t http_close(struct tcp_pcb *pcb, http_connection_t *connection) {
 
     const err_t err = tcp_close(pcb);
     if (err != ERR_OK) {
+        printf("http: tcp_close failed err=%d, aborting pcb=%p\n", (int)err,
+               (void *)pcb);
         tcp_abort(pcb);
         return ERR_ABRT;
     }
 
+    printf("http: closed pcb=%p\n", (void *)pcb);
     return ERR_OK;
 }
 
 static void http_error(void *arg, err_t err) {
-    (void)err;
+    printf("http: tcp error err=%d connection=%p\n", (int)err, arg);
     http_connection_free((http_connection_t *)arg);
 }
 
 static err_t http_poll(void *arg, struct tcp_pcb *pcb) {
+    printf("http: poll timeout pcb=%p connection=%p\n", (void *)pcb, arg);
     return http_close(pcb, (http_connection_t *)arg);
 }
 
@@ -798,40 +835,52 @@ static size_t http_copy_response(char *response, size_t response_size,
 static size_t http_build_response(const char *request, char *response,
                                   size_t response_size) {
     if (http_request_matches(request, "GET", "/")) {
+        printf("http: route GET /\n");
         return http_build_index_response(response, response_size);
     }
 
     if (http_request_matches(request, "GET", "/api/config")) {
+        printf("http: route GET /api/config\n");
         const app_config_t config = app_config_get();
         return http_build_config_response(response, response_size, &config);
     }
 
     if (http_request_matches(request, "POST", "/api/config")) {
+        printf("http: route POST /api/config\n");
         app_config_t config = app_config_get();
         if (!http_parse_config(request, &config)) {
+            printf("http: config parse failed\n");
             return http_copy_response(response, response_size,
                                       bad_request_response);
         }
 
         if (!app_config_save(&config)) {
+            printf("http: config save failed\n");
             return http_copy_response(response, response_size,
                                       server_error_response);
         }
 
+        printf("http: config saved blink_count=%lu frequency_tenths=%lu\n",
+               (unsigned long)config.blink_count,
+               (unsigned long)config.frequency_tenths);
         return http_build_config_response(response, response_size, &config);
     }
 
     if (http_request_matches(request, "POST", "/api/blink")) {
+        printf("http: route POST /api/blink\n");
         blink_request_enqueue_web();
         return http_copy_response(response, response_size, blink_response);
     }
 
     if (http_request_matches(request, "GET", "/api/wifi/scan")) {
+        printf("http: route GET /api/wifi/scan\n");
         return http_build_scan_response(response, response_size);
     }
 
     if (http_request_matches(request, "POST", "/api/wifi/scan")) {
+        printf("http: route POST /api/wifi/scan\n");
         if (wifi_scan_start() != ERR_OK) {
+            printf("http: wifi scan start failed\n");
             return http_copy_response(response, response_size,
                                       scan_error_response);
         }
@@ -840,17 +889,21 @@ static size_t http_build_response(const char *request, char *response,
     }
 
     if (http_request_matches(request, "POST", "/api/wifi")) {
+        printf("http: route POST /api/wifi\n");
         app_config_t config = app_config_get();
         if (!http_parse_wifi_config(request, &config)) {
+            printf("http: wifi config parse failed\n");
             return http_copy_response(response, response_size,
                                       bad_request_response);
         }
 
         if (!app_config_save(&config)) {
+            printf("http: wifi config save failed\n");
             return http_copy_response(response, response_size,
                                       server_error_response);
         }
 
+        printf("http: wifi config saved ssid='%s'\n", config.wifi_ssid);
         return http_copy_response(response, response_size, wifi_saved_response);
     }
 
@@ -858,19 +911,25 @@ static size_t http_build_response(const char *request, char *response,
         http_path_matches(request, "/api/blink") ||
         http_path_matches(request, "/api/wifi") ||
         http_path_matches(request, "/api/wifi/scan")) {
+        printf("http: method not allowed\n");
         return http_copy_response(response, response_size,
                                   method_not_allowed_response);
     }
 
+    printf("http: route not found\n");
     return http_copy_response(response, response_size, not_found_response);
 }
 
 static err_t http_write_and_close(struct tcp_pcb *pcb,
                                   http_connection_t *connection,
                                   size_t response_len) {
+    printf("http: writing response len=%lu pcb=%p\n",
+           (unsigned long)response_len, (void *)pcb);
     err_t err = tcp_write(pcb, connection->response, response_len,
                           TCP_WRITE_FLAG_COPY);
     if (err != ERR_OK) {
+        printf("http: tcp_write failed err=%d pcb=%p\n", (int)err,
+               (void *)pcb);
         http_connection_free(connection);
         tcp_abort(pcb);
         return ERR_ABRT;
@@ -878,11 +937,14 @@ static err_t http_write_and_close(struct tcp_pcb *pcb,
 
     err = tcp_output(pcb);
     if (err != ERR_OK) {
+        printf("http: tcp_output failed err=%d pcb=%p\n", (int)err,
+               (void *)pcb);
         http_connection_free(connection);
         tcp_abort(pcb);
         return ERR_ABRT;
     }
 
+    printf("http: tcp_output ok pcb=%p\n", (void *)pcb);
     return http_close(pcb, connection);
 }
 
@@ -891,19 +953,29 @@ static err_t http_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p,
     http_connection_t *connection = (http_connection_t *)arg;
 
     if (p == NULL) {
+        printf("http: recv remote close pcb=%p connection=%p\n", (void *)pcb,
+               (void *)connection);
         return http_close(pcb, connection);
     }
 
     if (err != ERR_OK) {
+        printf("http: recv error err=%d len=%u pcb=%p\n", (int)err,
+               (unsigned int)p->tot_len, (void *)pcb);
         pbuf_free(p);
         return http_close(pcb, connection);
     }
 
     tcp_recved(pcb, p->tot_len);
+    http_recv_count++;
+    printf("http: recv len=%u accumulated=%lu pcb=%p\n",
+           (unsigned int)p->tot_len, (unsigned long)connection->request_len,
+           (void *)pcb);
 
     const size_t available =
         sizeof(connection->request) - connection->request_len - 1u;
     if (p->tot_len > available) {
+        printf("http: request too large len=%u available=%lu\n",
+               (unsigned int)p->tot_len, (unsigned long)available);
         pbuf_free(p);
         const size_t response_len =
             http_copy_response(connection->response,
@@ -919,12 +991,25 @@ static err_t http_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p,
     pbuf_free(p);
 
     if (!http_request_complete(connection)) {
+        printf("http: request incomplete total=%lu\n",
+               (unsigned long)connection->request_len);
         return ERR_OK;
     }
+
+    const char *line_end = strstr(connection->request, "\r\n");
+    int request_line_len = 0;
+    if (line_end != NULL) {
+        request_line_len = (int)(line_end - connection->request);
+    }
+    printf("http: request complete line='%.*s' total=%lu\n",
+           request_line_len, connection->request,
+           (unsigned long)connection->request_len);
 
     const size_t response_len =
         http_build_response(connection->request, connection->response,
                             sizeof(connection->response));
+    http_response_count++;
+    printf("http: responding len=%lu\n", (unsigned long)response_len);
     return http_write_and_close(pcb, connection, response_len);
 }
 
@@ -935,12 +1020,19 @@ static err_t http_accept(void *arg, struct tcp_pcb *new_pcb, err_t err) {
         return ERR_VAL;
     }
 
+    http_accept_count++;
+    printf("http: accepted connection count=%lu\n",
+           (unsigned long)http_accept_count);
+
     http_connection_t *connection = http_connection_alloc();
     if (connection == NULL) {
+        printf("http: no free connection slots\n");
         tcp_close(new_pcb);
         return ERR_MEM;
     }
 
+    printf("http: connection allocated %p for pcb=%p\n", (void *)connection,
+           (void *)new_pcb);
     tcp_arg(new_pcb, connection);
     tcp_recv(new_pcb, http_recv);
     tcp_err(new_pcb, http_error);
@@ -952,6 +1044,7 @@ static err_t http_accept(void *arg, struct tcp_pcb *new_pcb, err_t err) {
 static err_t http_server_start(const struct netif *netif) {
     struct tcp_pcb *pcb = tcp_new_ip_type(IPADDR_TYPE_V4);
     if (pcb == NULL) {
+        printf("http: tcp_new failed\n");
         return ERR_MEM;
     }
 
@@ -959,8 +1052,14 @@ static err_t http_server_start(const struct netif *netif) {
 
     const ip_addr_t *bind_addr =
         netif == NULL ? IP_ADDR_ANY : netif_ip_addr4(netif);
+    char bind_ip[16];
+    ip_to_string(bind_addr, bind_ip, sizeof(bind_ip));
+    printf("http: binding to %s:%u netif=%p\n", bind_ip, HTTP_PORT,
+           (const void *)netif);
+
     err_t err = tcp_bind(pcb, bind_addr, HTTP_PORT);
     if (err != ERR_OK) {
+        printf("http: bind failed err=%d\n", (int)err);
         tcp_close(pcb);
         return err;
     }
@@ -968,12 +1067,14 @@ static err_t http_server_start(const struct netif *netif) {
     struct tcp_pcb *listener = tcp_listen_with_backlog_and_err(
         pcb, HTTP_BACKLOG, &err);
     if (listener == NULL) {
+        printf("http: listen failed err=%d\n", (int)err);
         tcp_close(pcb);
         return err == ERR_OK ? ERR_MEM : err;
     }
 
     http_listener = listener;
     tcp_accept(http_listener, http_accept);
+    printf("http: listening listener=%p\n", (void *)http_listener);
 
     return ERR_OK;
 }
@@ -1008,6 +1109,7 @@ static err_t mdns_server_start(void) {
 
     err_t err = mdns_resp_add_netif(netif, MACROPAD_MDNS_HOSTNAME);
     if (err != ERR_OK) {
+        printf("mdns: add netif failed err=%d\n", (int)err);
         return err;
     }
 
@@ -1017,22 +1119,30 @@ static err_t mdns_server_start(void) {
     (void)service;
 
     mdns_resp_announce(netif);
+    printf("mdns: announced %s.local service=%d\n", MACROPAD_MDNS_HOSTNAME,
+           (int)service);
     return ERR_OK;
 }
 
 static err_t network_start_setup_ap(void) {
     current_mode = NETWORK_MODE_SETUP_AP;
+    printf("network: starting setup AP\n");
     cyw43_arch_enable_ap_mode(MACROPAD_AP_SSID, NULL, CYW43_AUTH_OPEN);
 
     cyw43_arch_lwip_begin();
+    network_log_netif("setup ap", &cyw43_state.netif[CYW43_ITF_AP]);
 
     err_t err = dhcp_server_start();
+    printf("network: dhcp_server_start err=%d\n", (int)err);
     if (err == ERR_OK) {
         err = http_server_start(&cyw43_state.netif[CYW43_ITF_AP]);
     }
 
     if (err != ERR_OK) {
+        printf("network: setup AP start failed err=%d\n", (int)err);
         dhserv_free();
+    } else {
+        printf("network: setup AP ready\n");
     }
 
     cyw43_arch_lwip_end();
@@ -1042,6 +1152,7 @@ static err_t network_start_setup_ap(void) {
 
 static err_t network_start_station(const app_config_t *config) {
     current_mode = NETWORK_MODE_STATION;
+    printf("network: connecting to SSID '%s'\n", config->wifi_ssid);
     cyw43_arch_enable_sta_mode();
 
     const char *password =
@@ -1049,16 +1160,26 @@ static err_t network_start_station(const app_config_t *config) {
     const int connect_err = cyw43_arch_wifi_connect_timeout_ms(
         config->wifi_ssid, password, CYW43_AUTH_WPA2_MIXED_PSK,
         WIFI_CONNECT_TIMEOUT_MS);
+    printf("network: wifi_connect_timeout result=%d\n", connect_err);
     if (connect_err != PICO_OK) {
+        printf("network: station connect failed err=%d\n", connect_err);
         cyw43_arch_disable_sta_mode();
         return ERR_CONN;
     }
 
     cyw43_arch_lwip_begin();
 
+    struct netif *netif = &cyw43_state.netif[CYW43_ITF_STA];
+    network_log_netif("station connected", netif);
+    printf("network: station link_status=%d\n",
+           cyw43_tcpip_link_status(&cyw43_state, CYW43_ITF_STA));
+
     err_t err = http_server_start(&cyw43_state.netif[CYW43_ITF_STA]);
+    last_http_start_err = err;
     if (err == ERR_OK) {
-        (void)mdns_server_start();
+        last_mdns_start_err = mdns_server_start();
+    } else {
+        last_mdns_start_err = ERR_ABRT;
     }
 
     cyw43_arch_lwip_end();
@@ -1077,22 +1198,59 @@ network_start_result_t network_start(void) {
 
     const app_config_t config = app_config_get();
     if (app_config_has_wifi_credentials(&config)) {
+        printf("network: stored Wi-Fi credentials found for ssid='%s'\n",
+               config.wifi_ssid);
         result.mode = NETWORK_MODE_STATION;
         result.err = network_start_station(&config);
         if (result.err == ERR_OK) {
+            printf("network: station startup completed\n");
             result.status = NETWORK_START_STATION_CONNECTED;
             return result;
         }
 
         if (result.err != ERR_CONN) {
+            printf("network: station startup failed hard err=%d\n",
+                   (int)result.err);
             result.status = NETWORK_START_STATION_FAILED;
             return result;
         }
 
+        printf("network: station connection failed, falling back to setup AP\n");
         result.mode = NETWORK_MODE_SETUP_AP;
         result.status = NETWORK_START_STATION_FAILED;
+    } else {
+        printf("network: no stored Wi-Fi credentials, starting setup AP\n");
     }
 
     result.err = network_start_setup_ap();
+    printf("network: setup AP startup completed err=%d\n", (int)result.err);
     return result;
+}
+
+void network_debug_poll(void) {
+    if (!time_reached(next_network_debug_at)) {
+        return;
+    }
+
+    next_network_debug_at = make_timeout_time_ms(2000);
+
+    cyw43_arch_lwip_begin();
+    const struct netif *netif =
+        current_mode == NETWORK_MODE_STATION
+            ? &cyw43_state.netif[CYW43_ITF_STA]
+            : &cyw43_state.netif[CYW43_ITF_AP];
+    char ip[16];
+    ip_to_string(netif_ip_addr4(netif), ip, sizeof(ip));
+    const int link_status = current_mode == NETWORK_MODE_STATION
+                                ? cyw43_tcpip_link_status(&cyw43_state,
+                                                          CYW43_ITF_STA)
+                                : -1;
+
+    printf("debug: mode=%d ip=%s flags=0x%02x link=%d http=%p start=%d "
+           "mdns=%d accept=%lu recv=%lu resp=%lu\n",
+           (int)current_mode, ip, (unsigned int)netif->flags, link_status,
+           (void *)http_listener, (int)last_http_start_err,
+           (int)last_mdns_start_err, (unsigned long)http_accept_count,
+           (unsigned long)http_recv_count, (unsigned long)http_response_count);
+    cyw43_arch_lwip_end();
 }
