@@ -949,13 +949,17 @@ static err_t http_accept(void *arg, struct tcp_pcb *new_pcb, err_t err) {
     return ERR_OK;
 }
 
-static err_t http_server_start(void) {
+static err_t http_server_start(const struct netif *netif) {
     struct tcp_pcb *pcb = tcp_new_ip_type(IPADDR_TYPE_V4);
     if (pcb == NULL) {
         return ERR_MEM;
     }
 
-    err_t err = tcp_bind(pcb, IP_ADDR_ANY, HTTP_PORT);
+    tcp_bind_netif(pcb, netif);
+
+    const ip_addr_t *bind_addr =
+        netif == NULL ? IP_ADDR_ANY : netif_ip_addr4(netif);
+    err_t err = tcp_bind(pcb, bind_addr, HTTP_PORT);
     if (err != ERR_OK) {
         tcp_close(pcb);
         return err;
@@ -1024,7 +1028,7 @@ static err_t network_start_setup_ap(void) {
 
     err_t err = dhcp_server_start();
     if (err == ERR_OK) {
-        err = http_server_start();
+        err = http_server_start(&cyw43_state.netif[CYW43_ITF_AP]);
     }
 
     if (err != ERR_OK) {
@@ -1052,7 +1056,7 @@ static err_t network_start_station(const app_config_t *config) {
 
     cyw43_arch_lwip_begin();
 
-    err_t err = http_server_start();
+    err_t err = http_server_start(&cyw43_state.netif[CYW43_ITF_STA]);
     if (err == ERR_OK) {
         (void)mdns_server_start();
     }
