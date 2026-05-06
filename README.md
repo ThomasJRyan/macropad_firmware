@@ -9,9 +9,14 @@ Firmware for a Raspberry Pi Pico W macropad.
 - The AP uses `172.16.4.1/24`.
 - The DHCP server offers `172.16.4.2` to the first client.
 - The HTTP server listens on `http://172.16.4.1/` and serves a page that says
-  `Hello World` with a button that blinks the onboard LED 5 times at 0.5 second
-  intervals.
-- `POST /api/blink` queues the web-triggered LED blink sequence.
+  `Hello World`.
+- The page has numeric configuration inputs for blink count and blink frequency,
+  defaulting to `0` and `0.0`.
+- Configuration is saved to flash and loaded across boots.
+- `GET /api/config` returns the saved configuration.
+- `POST /api/config` saves `blinks` and `frequency` form values.
+- `POST /api/blink` queues the web-triggered LED blink sequence using the saved
+  configuration.
 - GP5: active-low button with internal pull-up; press once to blink the onboard
   LED 5 times at 0.25 second intervals.
 - GP6: active-low button with internal pull-up; press once to blink the onboard

@@ -1,3 +1,4 @@
+#include "app_config.h"
 #include "blink_request.h"
 #include "button.h"
 #include "led_blink.h"
@@ -12,11 +13,11 @@
 
 #define BLINK_COUNT 5
 #define FAST_BLINK_INTERVAL_MS 250
-#define WEB_BLINK_INTERVAL_MS 500
 #define SLOW_BLINK_INTERVAL_MS 1000
 
 int main(void) {
     stdio_init_all();
+    app_config_init();
     blink_request_init();
 
     if (cyw43_arch_init() != 0) {
@@ -42,8 +43,12 @@ int main(void) {
         const bool slow_pressed = button_update(&slow_button);
 
         if (web_blink_requested) {
-            blink_sequence_start(&led_sequence, WEB_BLINK_INTERVAL_MS,
-                                 BLINK_COUNT);
+            const app_config_t config = app_config_get();
+            const uint32_t interval_ms = app_config_interval_ms(&config);
+            if (config.blink_count > 0 && interval_ms > 0) {
+                blink_sequence_start(&led_sequence, interval_ms,
+                                     config.blink_count);
+            }
         } else if (fast_pressed) {
             blink_sequence_start(&led_sequence, FAST_BLINK_INTERVAL_MS,
                                  BLINK_COUNT);

@@ -15,6 +15,7 @@ pico_sdk_init()
 
 add_executable(macropad_3
     ${PICO_SDK_PATH}/lib/tinyusb/lib/networking/dhserver.c
+    src/app_config.c
     src/blink_request.c
     src/button.c
     src/led_blink.c
@@ -32,9 +33,12 @@ target_compile_definitions(macropad_3 PRIVATE
     CYW43_DEFAULT_IP_AP_GATEWAY=0xAC100401
     CYW43_DEFAULT_IP_MASK=0xFFFFFF00
     CYW43_DEFAULT_IP_DNS=0x00000000
+    PICO_FLASH_ASSUME_CORE1_SAFE=1
 )
 
 target_link_libraries(macropad_3
+    hardware_flash
+    pico_flash
     pico_stdlib
     pico_cyw43_arch_lwip_threadsafe_background
 )
