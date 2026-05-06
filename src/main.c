@@ -4,8 +4,8 @@
 #include "pico/cyw43_arch.h"
 #include "pico/stdlib.h"
 
-#define BUTTON_FAST_PIN 6
-#define BUTTON_SLOW_PIN 7
+#define BUTTON_FAST_PIN 5
+#define BUTTON_SLOW_PIN 6
 
 #define BUTTON_DEBOUNCE_MS 30
 #define BUTTON_POLL_INTERVAL_MS 5
