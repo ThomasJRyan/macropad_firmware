@@ -67,6 +67,7 @@ int main(void) {
             rest_client_trigger(1);
         }
 
+        rest_client_poll();
         network_debug_poll();
 
         sleep_ms(BUTTON_POLL_INTERVAL_MS);

@@ -1251,6 +1251,7 @@ static err_t network_start_station(const app_config_t *config) {
     cyw43_arch_lwip_begin();
 
     struct netif *netif = &cyw43_state.netif[CYW43_ITF_STA];
+    netif_set_default(netif);
     network_log_netif("station connected", netif);
     printf("network: station link_status=%d\n",
            cyw43_tcpip_link_status(&cyw43_state, CYW43_ITF_STA));

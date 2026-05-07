@@ -6,10 +6,14 @@
 #include <string.h>
 
 #include "app_config.h"
+#include "cyw43.h"
 #include "lwip/dns.h"
+#include "lwip/ip4.h"
 #include "lwip/ip_addr.h"
+#include "lwip/netif.h"
 #include "lwip/tcp.h"
 #include "pico/cyw43_arch.h"
+#include "pico/time.h"
 
 #define REST_CLIENT_MAX_CONNECTIONS APP_CONFIG_BUTTON_COUNT
 #define REST_CLIENT_HOST_MAX 64u
@@ -17,6 +21,7 @@
 #define REST_CLIENT_REQUEST_MAX 896u
 #define REST_CLIENT_POLL_INTERVAL 10
 #define REST_CLIENT_TIMEOUT_POLLS 6
+#define REST_CLIENT_CONNECT_TIMEOUT_MS 5000
 
 typedef struct {
     char host[REST_CLIENT_HOST_MAX + 1u];
@@ -30,14 +35,44 @@ typedef struct {
     app_config_button_action_t action;
     parsed_url_t url;
     struct tcp_pcb *pcb;
+    bool connected;
     char request[REST_CLIENT_REQUEST_MAX];
     size_t request_len;
     size_t bytes_acked;
     size_t response_bytes;
     uint8_t poll_count;
+    absolute_time_t connect_deadline;
 } rest_connection_t;
 
 static rest_connection_t connections[REST_CLIENT_MAX_CONNECTIONS];
+
+static void rest_ip_to_string(const ip_addr_t *addr, char *buffer,
+                              size_t buffer_size) {
+    if (addr == NULL) {
+        snprintf(buffer, buffer_size, "none");
+        return;
+    }
+
+    ipaddr_ntoa_r(addr, buffer, (int)buffer_size);
+}
+
+static void rest_log_netif(const char *label, const struct netif *netif) {
+    if (netif == NULL) {
+        printf("rest: %s netif=none\n", label);
+        return;
+    }
+
+    char ip[16];
+    char mask[16];
+    char gw[16];
+    rest_ip_to_string(netif_ip_addr4(netif), ip, sizeof(ip));
+    rest_ip_to_string(netif_ip_netmask4(netif), mask, sizeof(mask));
+    rest_ip_to_string(netif_ip_gw4(netif), gw, sizeof(gw));
+
+    printf("rest: %s netif=%c%c%u ip=%s mask=%s gw=%s flags=0x%02x\n",
+           label, netif->name[0], netif->name[1], (unsigned int)netif->num,
+           ip, mask, gw, (unsigned int)netif->flags);
+}
 
 static void rest_connection_free(rest_connection_t *connection) {
     if (connection != NULL) {
@@ -281,6 +316,7 @@ static err_t rest_connected(void *arg, struct tcp_pcb *pcb, err_t err) {
         return err;
     }
 
+    connection->connected = true;
     printf("rest: connected button=%lu host=%s port=%u\n",
            (unsigned long)connection->button_index, connection->url.host,
            (unsigned int)connection->url.port);
@@ -330,6 +366,14 @@ static void rest_connect_to_addr(rest_connection_t *connection,
            (unsigned long)connection->button_index, ip,
            (unsigned int)connection->url.port);
 
+    struct netif *station_netif = &cyw43_state.netif[CYW43_ITF_STA];
+    rest_log_netif("station connect source", station_netif);
+    printf("rest: station link_status=%d\n",
+           cyw43_tcpip_link_status(&cyw43_state, CYW43_ITF_STA));
+
+    struct netif *route = ip4_route(ip_2_ip4(addr));
+    rest_log_netif("route before bind", route);
+
     connection->pcb = tcp_new_ip_type(IPADDR_TYPE_V4);
     if (connection->pcb == NULL) {
         printf("rest: tcp_new failed button=%lu\n",
@@ -338,12 +382,18 @@ static void rest_connect_to_addr(rest_connection_t *connection,
         return;
     }
 
+    tcp_bind_netif(connection->pcb, station_netif);
     tcp_arg(connection->pcb, connection);
     tcp_err(connection->pcb, rest_error);
+    connection->connect_deadline =
+        make_timeout_time_ms(REST_CLIENT_CONNECT_TIMEOUT_MS);
 
     const err_t err =
         tcp_connect(connection->pcb, addr, connection->url.port,
                     rest_connected);
+    printf("rest: tcp_connect start button=%lu err=%d pcb=%p\n",
+           (unsigned long)connection->button_index, (int)err,
+           (void *)connection->pcb);
     if (err != ERR_OK) {
         printf("rest: tcp_connect failed button=%lu err=%d\n",
                (unsigned long)connection->button_index, (int)err);
@@ -369,6 +419,31 @@ void rest_client_init(void) {
     memset(connections, 0, sizeof(connections));
     printf("rest: client initialized slots=%u\n",
            (unsigned int)REST_CLIENT_MAX_CONNECTIONS);
+}
+
+void rest_client_poll(void) {
+    cyw43_arch_lwip_begin();
+    for (size_t i = 0; i < REST_CLIENT_MAX_CONNECTIONS; i++) {
+        rest_connection_t *connection = &connections[i];
+        if (!connection->in_use || connection->pcb == NULL ||
+            connection->connected ||
+            !time_reached(connection->connect_deadline)) {
+            continue;
+        }
+
+        printf("rest: connect timeout button=%lu host=%s port=%u pcb=%p\n",
+               (unsigned long)connection->button_index, connection->url.host,
+               (unsigned int)connection->url.port, (void *)connection->pcb);
+
+        tcp_arg(connection->pcb, NULL);
+        tcp_recv(connection->pcb, NULL);
+        tcp_sent(connection->pcb, NULL);
+        tcp_poll(connection->pcb, NULL, 0);
+        tcp_err(connection->pcb, NULL);
+        tcp_abort(connection->pcb);
+        rest_connection_free(connection);
+    }
+    cyw43_arch_lwip_end();
 }
 
 void rest_client_trigger(size_t button_index) {
