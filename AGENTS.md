@@ -88,7 +88,32 @@ the automated flashing path.
 
 ### Serial Console
 
-Use `tio` to read USB serial output from the Pico W:
+The firmware enables both USB stdio and UART0 stdio. UART0 is the preferred
+debug path when using a second Pico as a Picoprobe/debugprobe because it keeps
+logs available even when the target Pico W USB connection is busy or unstable.
+
+Target Pico W UART wiring:
+
+```text
+Pico W GP0 / UART0 TX -> probe UART RX
+Pico W GP1 / UART0 RX <- probe UART TX
+Pico W GND            -> probe GND
+```
+
+Read the probe UART serial device at 115200 baud. The exact by-id path can vary,
+so list devices first:
+
+```sh
+ls -l /dev/serial/by-id/
+```
+
+Then connect with `tio`, for example:
+
+```sh
+tio -b 115200 /dev/serial/by-id/<debug-probe-uart-device>
+```
+
+USB serial on the target Pico W is also enabled and can be read with:
 
 ```sh
 tio -b 115200 /dev/serial/by-id/usb-Raspberry_Pi_Pico_E6614104037C782B-if00

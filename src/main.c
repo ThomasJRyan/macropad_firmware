@@ -5,7 +5,6 @@
 #include "network.h"
 #include "pico/cyw43_arch.h"
 #include "pico/stdlib.h"
-#include "pico/stdio_usb.h"
 
 #include <stdio.h>
 
@@ -19,7 +18,6 @@
 #define SLOW_BLINK_INTERVAL_MS 1000
 #define STATUS_BLINK_INTERVAL_MS 100
 #define STATUS_SUCCESS_BLINK_COUNT 3
-#define USB_STDIO_WAIT_MS 15000
 
 static void blink_sequence_start_from_config(blink_sequence_t *sequence) {
     const app_config_t config = app_config_get();
@@ -32,12 +30,6 @@ static void blink_sequence_start_from_config(blink_sequence_t *sequence) {
 
 int main(void) {
     stdio_init_all();
-
-    const absolute_time_t usb_stdio_deadline =
-        make_timeout_time_ms(USB_STDIO_WAIT_MS);
-    while (!stdio_usb_connected() && !time_reached(usb_stdio_deadline)) {
-        sleep_ms(10);
-    }
 
     printf("boot: macropad firmware starting\n");
     fflush(stdout);

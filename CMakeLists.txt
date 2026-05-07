@@ -34,6 +34,10 @@ target_compile_definitions(macropad_3 PRIVATE
     CYW43_DEFAULT_IP_MASK=0xFFFFFF00
     CYW43_DEFAULT_IP_DNS=0x00000000
     PICO_FLASH_ASSUME_CORE1_SAFE=1
+    PICO_DEFAULT_UART=0
+    PICO_DEFAULT_UART_TX_PIN=0
+    PICO_DEFAULT_UART_RX_PIN=1
+    PICO_DEFAULT_UART_BAUD_RATE=115200
 )
 
 target_link_libraries(macropad_3
@@ -45,5 +49,5 @@ target_link_libraries(macropad_3
 )
 
 pico_enable_stdio_usb(macropad_3 1)
-pico_enable_stdio_uart(macropad_3 0)
+pico_enable_stdio_uart(macropad_3 1)
 pico_add_extra_outputs(macropad_3)
