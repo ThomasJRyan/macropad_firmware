@@ -4,10 +4,12 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/types.h>
 
 #include "app_config.h"
 #include "cyw43.h"
 #include "lwip/dns.h"
+#include "lwip/etharp.h"
 #include "lwip/ip4.h"
 #include "lwip/ip_addr.h"
 #include "lwip/netif.h"
@@ -21,7 +23,8 @@
 #define REST_CLIENT_REQUEST_MAX 896u
 #define REST_CLIENT_POLL_INTERVAL 10
 #define REST_CLIENT_TIMEOUT_POLLS 6
-#define REST_CLIENT_CONNECT_TIMEOUT_MS 5000
+#define REST_CLIENT_CONNECT_TIMEOUT_MS 15000
+#define REST_CLIENT_CONNECT_LOG_INTERVAL_MS 1000
 
 typedef struct {
     char host[REST_CLIENT_HOST_MAX + 1u];
@@ -42,6 +45,7 @@ typedef struct {
     size_t response_bytes;
     uint8_t poll_count;
     absolute_time_t connect_deadline;
+    absolute_time_t next_connect_log;
 } rest_connection_t;
 
 static rest_connection_t connections[REST_CLIENT_MAX_CONNECTIONS];
@@ -72,6 +76,80 @@ static void rest_log_netif(const char *label, const struct netif *netif) {
     printf("rest: %s netif=%c%c%u ip=%s mask=%s gw=%s flags=0x%02x\n",
            label, netif->name[0], netif->name[1], (unsigned int)netif->num,
            ip, mask, gw, (unsigned int)netif->flags);
+}
+
+static const char *rest_tcp_state_name(enum tcp_state state) {
+    switch (state) {
+    case CLOSED:
+        return "CLOSED";
+    case LISTEN:
+        return "LISTEN";
+    case SYN_SENT:
+        return "SYN_SENT";
+    case SYN_RCVD:
+        return "SYN_RCVD";
+    case ESTABLISHED:
+        return "ESTABLISHED";
+    case FIN_WAIT_1:
+        return "FIN_WAIT_1";
+    case FIN_WAIT_2:
+        return "FIN_WAIT_2";
+    case CLOSE_WAIT:
+        return "CLOSE_WAIT";
+    case CLOSING:
+        return "CLOSING";
+    case LAST_ACK:
+        return "LAST_ACK";
+    case TIME_WAIT:
+        return "TIME_WAIT";
+    default:
+        return "UNKNOWN";
+    }
+}
+
+static void rest_log_pcb(const char *label, const struct tcp_pcb *pcb) {
+    if (pcb == NULL) {
+        printf("rest: %s pcb=none\n", label);
+        return;
+    }
+
+    char local_ip[16];
+    char remote_ip[16];
+    rest_ip_to_string(&pcb->local_ip, local_ip, sizeof(local_ip));
+    rest_ip_to_string(&pcb->remote_ip, remote_ip, sizeof(remote_ip));
+
+    printf("rest: %s pcb=%p state=%s local=%s:%u remote=%s:%u nrtx=%u "
+           "rtime=%d rto=%d unsent=%p unacked=%p sndq=%u\n",
+           label, (const void *)pcb, rest_tcp_state_name(pcb->state),
+           local_ip, (unsigned int)pcb->local_port, remote_ip,
+           (unsigned int)pcb->remote_port, (unsigned int)pcb->nrtx,
+           (int)pcb->rtime, (int)pcb->rto, (void *)pcb->unsent,
+           (void *)pcb->unacked, (unsigned int)pcb->snd_queuelen);
+}
+
+static void rest_log_arp(const char *label, struct netif *netif,
+                         const ip_addr_t *addr) {
+    if (netif == NULL || addr == NULL || !IP_IS_V4(addr)) {
+        printf("rest: %s arp unavailable\n", label);
+        return;
+    }
+
+    struct eth_addr *eth = NULL;
+    const ip4_addr_t *cached_ip = NULL;
+    const ssize_t index =
+        etharp_find_addr(netif, ip_2_ip4(addr), &eth, &cached_ip);
+    char ip[16];
+    rest_ip_to_string(addr, ip, sizeof(ip));
+
+    if (index < 0 || eth == NULL) {
+        printf("rest: %s arp miss ip=%s index=%d\n", label, ip,
+               (int)index);
+        return;
+    }
+
+    printf("rest: %s arp hit ip=%s index=%d mac=%02x:%02x:%02x:%02x:%02x:%02x\n",
+           label, ip, (int)index, eth->addr[0], eth->addr[1], eth->addr[2],
+           eth->addr[3], eth->addr[4], eth->addr[5]);
 }
 
 static void rest_connection_free(rest_connection_t *connection) {
@@ -373,6 +451,11 @@ static void rest_connect_to_addr(rest_connection_t *connection,
 
     struct netif *route = ip4_route(ip_2_ip4(addr));
     rest_log_netif("route before bind", route);
+    rest_log_arp("before arp probe", station_netif, addr);
+    const err_t arp_err = etharp_query(station_netif, ip_2_ip4(addr), NULL);
+    printf("rest: arp probe button=%lu ip=%s err=%d\n",
+           (unsigned long)connection->button_index, ip, (int)arp_err);
+    rest_log_arp("after arp probe", station_netif, addr);
 
     connection->pcb = tcp_new_ip_type(IPADDR_TYPE_V4);
     if (connection->pcb == NULL) {
@@ -387,6 +470,8 @@ static void rest_connect_to_addr(rest_connection_t *connection,
     tcp_err(connection->pcb, rest_error);
     connection->connect_deadline =
         make_timeout_time_ms(REST_CLIENT_CONNECT_TIMEOUT_MS);
+    connection->next_connect_log =
+        make_timeout_time_ms(REST_CLIENT_CONNECT_LOG_INTERVAL_MS);
 
     const err_t err =
         tcp_connect(connection->pcb, addr, connection->url.port,
@@ -399,7 +484,14 @@ static void rest_connect_to_addr(rest_connection_t *connection,
                (unsigned long)connection->button_index, (int)err);
         tcp_abort(connection->pcb);
         rest_connection_free(connection);
+        return;
     }
+
+    rest_log_pcb("after tcp_connect", connection->pcb);
+    const err_t output_err = tcp_output(connection->pcb);
+    printf("rest: tcp_output after connect button=%lu err=%d\n",
+           (unsigned long)connection->button_index, (int)output_err);
+    rest_log_pcb("after tcp_output", connection->pcb);
 }
 
 static void rest_dns_found(const char *name, const ip_addr_t *ipaddr,
@@ -425,8 +517,20 @@ void rest_client_poll(void) {
     cyw43_arch_lwip_begin();
     for (size_t i = 0; i < REST_CLIENT_MAX_CONNECTIONS; i++) {
         rest_connection_t *connection = &connections[i];
-        if (!connection->in_use || connection->pcb == NULL ||
-            connection->connected ||
+        if (!connection->in_use || connection->pcb == NULL) {
+            continue;
+        }
+
+        if (!connection->connected &&
+            time_reached(connection->next_connect_log)) {
+            rest_log_pcb("connect pending", connection->pcb);
+            rest_log_arp("pending", &cyw43_state.netif[CYW43_ITF_STA],
+                         &connection->pcb->remote_ip);
+            connection->next_connect_log =
+                make_timeout_time_ms(REST_CLIENT_CONNECT_LOG_INTERVAL_MS);
+        }
+
+        if (connection->connected ||
             !time_reached(connection->connect_deadline)) {
             continue;
         }
@@ -434,6 +538,9 @@ void rest_client_poll(void) {
         printf("rest: connect timeout button=%lu host=%s port=%u pcb=%p\n",
                (unsigned long)connection->button_index, connection->url.host,
                (unsigned int)connection->url.port, (void *)connection->pcb);
+        rest_log_pcb("connect timeout", connection->pcb);
+        rest_log_arp("timeout", &cyw43_state.netif[CYW43_ITF_STA],
+                     &connection->pcb->remote_ip);
 
         tcp_arg(connection->pcb, NULL);
         tcp_recv(connection->pcb, NULL);

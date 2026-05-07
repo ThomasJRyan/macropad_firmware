@@ -1101,8 +1101,18 @@ static err_t http_accept(void *arg, struct tcp_pcb *new_pcb, err_t err) {
     }
 
     http_accept_count++;
-    printf("http: accepted connection count=%lu\n",
-           (unsigned long)http_accept_count);
+    ip_addr_t remote_addr;
+    u16_t remote_port = 0;
+    char remote_ip[16];
+    if (tcp_tcp_get_tcp_addrinfo(new_pcb, 0, &remote_addr, &remote_port) ==
+        ERR_OK) {
+        ip_to_string(&remote_addr, remote_ip, sizeof(remote_ip));
+    } else {
+        snprintf(remote_ip, sizeof(remote_ip), "unknown");
+    }
+    printf("http: accepted connection count=%lu remote=%s:%u\n",
+           (unsigned long)http_accept_count, remote_ip,
+           (unsigned int)remote_port);
 
     http_connection_t *connection = http_connection_alloc();
     if (connection == NULL) {
