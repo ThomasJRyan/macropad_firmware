@@ -29,6 +29,7 @@
 
 #define WIFI_SCAN_MAX_RESULTS 16
 #define WIFI_CONNECT_TIMEOUT_MS 15000
+#define NETWORK_PERIODIC_DEBUG 0
 
 #define BUTTON_0_PIN 5u
 #define BUTTON_1_PIN 6u
@@ -1280,6 +1281,7 @@ network_start_result_t network_start(void) {
 }
 
 void network_debug_poll(void) {
+#if NETWORK_PERIODIC_DEBUG
     if (!time_reached(next_network_debug_at)) {
         return;
     }
@@ -1305,4 +1307,5 @@ void network_debug_poll(void) {
            (int)last_mdns_start_err, (unsigned long)http_accept_count,
            (unsigned long)http_recv_count, (unsigned long)http_response_count);
     cyw43_arch_lwip_end();
+#endif
 }
