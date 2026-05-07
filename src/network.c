@@ -1191,6 +1191,8 @@ static err_t network_start_station(const app_config_t *config) {
 network_start_result_t network_start(void) {
     wifi_scan_state_init();
 
+    printf("network: lwip MEMP_NUM_SYS_TIMEOUT=%d\n", MEMP_NUM_SYS_TIMEOUT);
+
     network_start_result_t result = {
         .err = ERR_OK,
         .mode = NETWORK_MODE_SETUP_AP,

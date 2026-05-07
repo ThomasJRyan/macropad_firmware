@@ -29,6 +29,7 @@
 #define MEMP_NUM_TCP_PCB_LISTEN 4
 #define MEMP_NUM_TCP_SEG 16
 #define MEMP_NUM_UDP_PCB 6
+#define MEMP_NUM_SYS_TIMEOUT 16
 #define PBUF_POOL_SIZE 24
 
 #define TCP_MSS (1500 - 20 - 20)
