@@ -14,12 +14,15 @@ Firmware for a Raspberry Pi Pico W macropad.
 - The DHCP server offers `172.16.4.2` to the first client.
 - The HTTP server listens on `http://172.16.4.1/` in setup AP mode and on the
   DHCP-assigned address in station mode.
-- The page configures one HTTP action for GP5 and one HTTP action for GP6.
+- In setup AP mode, the root page only shows Wi-Fi setup.
+- In station mode, the root page only shows button action configuration.
+- Button configuration sets one HTTP action for GP5 and one HTTP action for
+  GP6.
 - Each button action can be disabled or configured as an HTTP `GET` or `POST`
   request to an `http://` URL.
 - `POST` actions can include a JSON request body.
-- The page can scan nearby Wi-Fi access points and save an SSID/password to
-  flash.
+- The setup page can scan nearby Wi-Fi access points and save an SSID/password
+  to flash.
 - Configuration is saved to flash and loaded across boots.
 - `GET /api/config` returns the saved configuration.
 - `POST /api/config` saves the two button action records.
