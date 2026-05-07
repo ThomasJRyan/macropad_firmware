@@ -16,11 +16,10 @@ pico_sdk_init()
 add_executable(macropad_3
     ${PICO_SDK_PATH}/lib/tinyusb/lib/networking/dhserver.c
     src/app_config.c
-    src/blink_request.c
     src/button.c
-    src/led_blink.c
     src/main.c
     src/network.c
+    src/rest_client.c
 )
 
 target_include_directories(macropad_3 PRIVATE

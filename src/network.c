@@ -7,7 +7,6 @@
 #include <string.h>
 
 #include "app_config.h"
-#include "blink_request.h"
 #include "cyw43.h"
 #include "dhserver.h"
 #include "lwip/apps/mdns.h"
@@ -21,8 +20,8 @@
 #define HTTP_PORT 80
 #define HTTP_BACKLOG 4
 #define HTTP_POLL_INTERVAL 10
-#define HTTP_REQUEST_MAX 1024
-#define HTTP_RESPONSE_MAX 6144
+#define HTTP_REQUEST_MAX 4096
+#define HTTP_RESPONSE_MAX 8192
 
 #define DHCP_SERVER_PORT 67
 #define DHCP_LEASE_SECONDS (24 * 60 * 60)
@@ -30,6 +29,9 @@
 
 #define WIFI_SCAN_MAX_RESULTS 16
 #define WIFI_CONNECT_TIMEOUT_MS 15000
+
+#define BUTTON_0_PIN 5u
+#define BUTTON_1_PIN 6u
 
 typedef struct {
     bool in_use;
@@ -54,24 +56,56 @@ static const char index_response_template[] =
     "<html>"
     "<head>"
     "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
-    "<title>Macropad Setup</title>"
+    "<title>Macropad</title>"
+    "<style>"
+    "body{font-family:sans-serif;margin:0;background:#f7f7f4;color:#1f2933}"
+    "main{max-width:760px;margin:0 auto;padding:24px}"
+    "section{margin:18px 0;padding:16px;background:#fff;border:1px solid #ddd}"
+    "label{display:block;margin:10px 0 4px;font-weight:600}"
+    "input,select,textarea,button{font:inherit;width:100%;box-sizing:border-box}"
+    "input,select,textarea{padding:10px;border:1px solid #b8c0cc}"
+    "textarea{min-height:90px}"
+    "button{margin-top:12px;padding:10px;background:#1f6feb;color:white;border:0}"
+    "#status{min-height:1.4em;font-weight:600}"
+    "</style>"
     "</head>"
     "<body>"
-    "<h1>%s</h1>"
-    "<form id=\"config\">"
-    "<label>Blinks "
-    "<input name=\"blinks\" type=\"number\" min=\"0\" max=\"100\" step=\"1\" "
-    "value=\"%lu\">"
-    "</label>"
-    "<label> Frequency "
-    "<input name=\"frequency\" type=\"number\" min=\"0\" max=\"60\" "
-    "step=\"0.1\" value=\"%lu.%lu\">"
-    "</label>"
-    "<button type=\"submit\">Save</button>"
+    "<main>"
+    "<h1>Macropad</h1>"
+    "<form id=\"actions\">"
+    "<section>"
+    "<h2>GP5</h2>"
+    "<label>Method</label>"
+    "<select name=\"b0_method\">"
+    "<option value=\"DISABLED\">Disabled</option>"
+    "<option value=\"GET\">GET</option>"
+    "<option value=\"POST\">POST</option>"
+    "</select>"
+    "<label>URL</label>"
+    "<input name=\"b0_url\" maxlength=\"128\" "
+    "placeholder=\"http://192.168.0.10/action\">"
+    "<label>POST body</label>"
+    "<textarea name=\"b0_body\" maxlength=\"512\"></textarea>"
+    "</section>"
+    "<section>"
+    "<h2>GP6</h2>"
+    "<label>Method</label>"
+    "<select name=\"b1_method\">"
+    "<option value=\"DISABLED\">Disabled</option>"
+    "<option value=\"GET\">GET</option>"
+    "<option value=\"POST\">POST</option>"
+    "</select>"
+    "<label>URL</label>"
+    "<input name=\"b1_url\" maxlength=\"128\" "
+    "placeholder=\"http://192.168.0.10/action\">"
+    "<label>POST body</label>"
+    "<textarea name=\"b1_body\" maxlength=\"512\"></textarea>"
+    "</section>"
+    "<button type=\"submit\">Save Buttons</button>"
     "</form>"
-    "<button type=\"button\" id=\"blink\">Blink LED</button>"
     "<section>"
     "<h2>Wi-Fi</h2>"
+    "<p id=\"wifi-current\"></p>"
     "<button type=\"button\" id=\"scan\">Scan</button>"
     "<form id=\"wifi\">"
     "<label>Network <select id=\"networks\" name=\"ssid\"></select></label>"
@@ -81,10 +115,24 @@ static const char index_response_template[] =
     "</form>"
     "</section>"
     "<p id=\"status\"></p>"
+    "</main>"
     "<script>"
     "const s=document.getElementById('status');"
     "const n=document.getElementById('networks');"
+    "const w=document.getElementById('wifi-current');"
     "function status(t){s.textContent=t;}"
+    "function setAction(i,a){"
+    "document.querySelector('[name=b'+i+'_method]').value=a.method;"
+    "document.querySelector('[name=b'+i+'_url]').value=a.url||'';"
+    "document.querySelector('[name=b'+i+'_body]').value=a.body||'';"
+    "}"
+    "async function loadConfig(){"
+    "const r=await fetch('/api/config');"
+    "const c=await r.json();"
+    "c.buttons.forEach((a,i)=>setAction(i,a));"
+    "w.textContent=c.wifi_configured?'Connected config: '+c.wifi_ssid:"
+    "'No Wi-Fi credentials saved';"
+    "}"
     "async function refreshScan(){"
     "const r=await fetch('/api/wifi/scan');"
     "const j=await r.json();"
@@ -98,16 +146,15 @@ static const char index_response_template[] =
     "if(j.scanning){status('Scanning...');setTimeout(refreshScan,1000);}"
     "else{status(j.networks.length?'Scan complete':'No networks found');}"
     "}"
-    "document.getElementById('config').addEventListener('submit',async "
+    "document.getElementById('actions').addEventListener('submit',async "
     "function(e){"
     "e.preventDefault();"
     "const r=await fetch('/api/config',{method:'POST',headers:{"
     "'Content-Type':'application/x-www-form-urlencoded'},"
     "body:new URLSearchParams(new FormData(this))});"
-    "status(r.ok?'Saved':'Save failed');"
+    "status(r.ok?'Buttons saved':'Button save failed');"
+    "if(r.ok)loadConfig();"
     "});"
-    "document.getElementById('blink').addEventListener('click',async "
-    "function(){await fetch('/api/blink',{method:'POST'});});"
     "document.getElementById('scan').addEventListener('click',async "
     "function(){"
     "status('Scanning...');"
@@ -121,17 +168,12 @@ static const char index_response_template[] =
     "'Content-Type':'application/x-www-form-urlencoded'},"
     "body:new URLSearchParams(new FormData(this))});"
     "status(r.ok?'Wi-Fi saved':'Wi-Fi save failed');"
+    "if(r.ok)loadConfig();"
     "});"
+    "loadConfig();"
     "</script>"
     "</body>"
     "</html>";
-
-static const char blink_response[] =
-    "HTTP/1.0 202 Accepted\r\n"
-    "Content-Type: application/json\r\n"
-    "Connection: close\r\n"
-    "\r\n"
-    "{\"status\":\"queued\"}\n";
 
 static const char wifi_saved_response[] =
     "HTTP/1.0 200 OK\r\n"
@@ -545,84 +587,83 @@ static bool http_param_value(const char *params, const char *name, char *value,
     return false;
 }
 
-static bool parse_uint32_value(const char *value, uint32_t *out) {
-    if (*value == '\0') {
-        return false;
+static bool http_optional_param_value(const char *body, const char *query,
+                                      const char *name, char *value,
+                                      size_t value_size) {
+    if (http_param_value(body, name, value, value_size) ||
+        http_param_value(query, name, value, value_size)) {
+        return true;
     }
 
-    uint32_t result = 0;
-    while (*value >= '0' && *value <= '9') {
-        result = (result * 10u) + (uint32_t)(*value - '0');
-        value++;
-    }
-
-    if (*value != '\0') {
-        return false;
-    }
-
-    *out = result;
+    value[0] = '\0';
     return true;
 }
 
-static bool parse_frequency_tenths(const char *value, uint32_t *out) {
-    if (*value == '\0') {
-        return false;
+static bool parse_action_method(const char *value,
+                                app_config_action_method_t *method) {
+    if (strcmp(value, "DISABLED") == 0 || strcmp(value, "disabled") == 0) {
+        *method = APP_CONFIG_ACTION_DISABLED;
+        return true;
     }
 
-    uint32_t whole = 0;
-    while (*value >= '0' && *value <= '9') {
-        whole = (whole * 10u) + (uint32_t)(*value - '0');
-        value++;
+    if (strcmp(value, "GET") == 0 || strcmp(value, "get") == 0) {
+        *method = APP_CONFIG_ACTION_GET;
+        return true;
     }
 
-    uint32_t tenths = 0;
-    if (*value == '.') {
-        value++;
-        if (*value >= '0' && *value <= '9') {
-            tenths = (uint32_t)(*value - '0');
-            value++;
-        }
-
-        while (*value == '0') {
-            value++;
-        }
+    if (strcmp(value, "POST") == 0 || strcmp(value, "post") == 0) {
+        *method = APP_CONFIG_ACTION_POST;
+        return true;
     }
 
-    if (*value != '\0') {
-        return false;
-    }
-
-    *out = (whole * 10u) + tenths;
-    return true;
+    return false;
 }
 
-static bool http_parse_config(const char *request, app_config_t *config) {
-    char blinks_value[12];
-    char frequency_value[12];
+static bool http_parse_action_config(const char *request,
+                                     app_config_t *config) {
     const char *body = http_request_body(request);
     const char *query = http_request_query(request);
+    app_config_t candidate = *config;
 
-    const bool has_blinks =
-        http_param_value(body, "blinks", blinks_value, sizeof(blinks_value)) ||
-        http_param_value(query, "blinks", blinks_value, sizeof(blinks_value));
-    const bool has_frequency =
-        http_param_value(body, "frequency", frequency_value,
-                         sizeof(frequency_value)) ||
-        http_param_value(query, "frequency", frequency_value,
-                         sizeof(frequency_value));
+    for (size_t i = 0; i < APP_CONFIG_BUTTON_COUNT; i++) {
+        char method_name[16];
+        char url_name[16];
+        char body_name[16];
+        char method_value[16];
 
-    uint32_t blink_count = 0;
-    uint32_t frequency_tenths = 0;
-    if (!has_blinks || !has_frequency ||
-        !parse_uint32_value(blinks_value, &blink_count) ||
-        !parse_frequency_tenths(frequency_value, &frequency_tenths)) {
-        return false;
+        snprintf(method_name, sizeof(method_name), "b%lu_method",
+                 (unsigned long)i);
+        snprintf(url_name, sizeof(url_name), "b%lu_url", (unsigned long)i);
+        snprintf(body_name, sizeof(body_name), "b%lu_body", (unsigned long)i);
+
+        if (!http_param_value(body, method_name, method_value,
+                              sizeof(method_value)) &&
+            !http_param_value(query, method_name, method_value,
+                              sizeof(method_value))) {
+            printf("http: missing action method for button=%lu\n",
+                   (unsigned long)i);
+            return false;
+        }
+
+        if (!parse_action_method(method_value,
+                                 &candidate.button_actions[i].method)) {
+            printf("http: invalid action method='%s' button=%lu\n",
+                   method_value, (unsigned long)i);
+            return false;
+        }
+
+        if (!http_optional_param_value(body, query, url_name,
+                                       candidate.button_actions[i].url,
+                                       sizeof(candidate.button_actions[i].url)) ||
+            !http_optional_param_value(body, query, body_name,
+                                       candidate.button_actions[i].body,
+                                       sizeof(candidate.button_actions[i].body))) {
+            return false;
+        }
     }
 
-    app_config_t candidate = *config;
-    candidate.blink_count = blink_count;
-    candidate.frequency_tenths = frequency_tenths;
     if (!app_config_validate(&candidate)) {
+        printf("http: action config validation failed\n");
         return false;
     }
 
@@ -669,28 +710,39 @@ static size_t http_build_config_response(char *response, size_t response_size,
         "Content-Type: application/json\r\n"
         "Connection: close\r\n"
         "\r\n"
-        "{\"blinks\":%lu,\"frequency\":%lu.%lu,\"wifi_configured\":%s,"
-        "\"wifi_ssid\":",
-        (unsigned long)config->blink_count,
-        (unsigned long)(config->frequency_tenths / 10u),
-        (unsigned long)(config->frequency_tenths % 10u),
+        "{\"wifi_configured\":%s,\"wifi_ssid\":",
         app_config_has_wifi_credentials(config) ? "true" : "false");
 
     json_append_string(response, response_size, &length, config->wifi_ssid);
-    http_append(response, response_size, &length, "}\n");
+    http_append(response, response_size, &length, ",\"buttons\":[");
+
+    for (size_t i = 0; i < APP_CONFIG_BUTTON_COUNT; i++) {
+        const app_config_button_action_t *action =
+            &config->button_actions[i];
+        const unsigned int pin = i == 0 ? BUTTON_0_PIN : BUTTON_1_PIN;
+
+        if (i > 0) {
+            http_append(response, response_size, &length, ",");
+        }
+
+        http_append(response, response_size, &length,
+                    "{\"pin\":%u,\"method\":", pin);
+        json_append_string(response, response_size, &length,
+                           app_config_action_method_name(action->method));
+        http_append(response, response_size, &length, ",\"url\":");
+        json_append_string(response, response_size, &length, action->url);
+        http_append(response, response_size, &length, ",\"body\":");
+        json_append_string(response, response_size, &length, action->body);
+        http_append(response, response_size, &length, "}");
+    }
+
+    http_append(response, response_size, &length, "]}\n");
     return length;
 }
 
 static size_t http_build_index_response(char *response, size_t response_size) {
-    const app_config_t config = app_config_get();
-    const char *heading =
-        current_mode == NETWORK_MODE_STATION ? "connect to network"
-                                             : "Hello World";
-
-    return http_format(response, response_size, index_response_template,
-                       heading, (unsigned long)config.blink_count,
-                       (unsigned long)(config.frequency_tenths / 10u),
-                       (unsigned long)(config.frequency_tenths % 10u));
+    return http_format(response, response_size, "%s",
+                       index_response_template);
 }
 
 static void wifi_scan_state_init(void) {
@@ -848,28 +900,26 @@ static size_t http_build_response(const char *request, char *response,
     if (http_request_matches(request, "POST", "/api/config")) {
         printf("http: route POST /api/config\n");
         app_config_t config = app_config_get();
-        if (!http_parse_config(request, &config)) {
-            printf("http: config parse failed\n");
+        if (!http_parse_action_config(request, &config)) {
+            printf("http: action config parse failed\n");
             return http_copy_response(response, response_size,
                                       bad_request_response);
         }
 
         if (!app_config_save(&config)) {
-            printf("http: config save failed\n");
+            printf("http: action config save failed\n");
             return http_copy_response(response, response_size,
                                       server_error_response);
         }
 
-        printf("http: config saved blink_count=%lu frequency_tenths=%lu\n",
-               (unsigned long)config.blink_count,
-               (unsigned long)config.frequency_tenths);
+        for (size_t i = 0; i < APP_CONFIG_BUTTON_COUNT; i++) {
+            printf("http: action saved button=%lu method=%s url='%s'\n",
+                   (unsigned long)i,
+                   app_config_action_method_name(
+                       config.button_actions[i].method),
+                   config.button_actions[i].url);
+        }
         return http_build_config_response(response, response_size, &config);
-    }
-
-    if (http_request_matches(request, "POST", "/api/blink")) {
-        printf("http: route POST /api/blink\n");
-        blink_request_enqueue_web();
-        return http_copy_response(response, response_size, blink_response);
     }
 
     if (http_request_matches(request, "GET", "/api/wifi/scan")) {
@@ -908,7 +958,6 @@ static size_t http_build_response(const char *request, char *response,
     }
 
     if (http_path_matches(request, "/api/config") ||
-        http_path_matches(request, "/api/blink") ||
         http_path_matches(request, "/api/wifi") ||
         http_path_matches(request, "/api/wifi/scan")) {
         printf("http: method not allowed\n");
