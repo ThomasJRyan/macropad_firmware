@@ -1048,10 +1048,11 @@ static err_t http_server_start(const struct netif *netif) {
         return ERR_MEM;
     }
 
-    tcp_bind_netif(pcb, netif);
+    if (netif != NULL) {
+        network_log_netif("http target", netif);
+    }
 
-    const ip_addr_t *bind_addr =
-        netif == NULL ? IP_ADDR_ANY : netif_ip_addr4(netif);
+    const ip_addr_t *bind_addr = IP_ADDR_ANY;
     char bind_ip[16];
     ip_to_string(bind_addr, bind_ip, sizeof(bind_ip));
     printf("http: binding to %s:%u netif=%p\n", bind_ip, HTTP_PORT,

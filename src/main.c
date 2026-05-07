@@ -74,10 +74,10 @@ int main(void) {
 
     bool saved_boot_blink_pending = false;
     if (network.status == NETWORK_START_STATION_CONNECTED) {
-        printf("boot: station connected, playing success blink\n");
+        printf("boot: station connected, playing success blink; "
+               "saved boot blink suppressed for HTTP diagnostic\n");
         blink_sequence_start(&led_sequence, STATUS_BLINK_INTERVAL_MS,
                              STATUS_SUCCESS_BLINK_COUNT);
-        saved_boot_blink_pending = true;
     } else if (network.status == NETWORK_START_STATION_FAILED) {
         printf("boot: station failed, starting failure blink\n");
         blink_sequence_start_forever(&led_sequence, STATUS_BLINK_INTERVAL_MS);
