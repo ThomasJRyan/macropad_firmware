@@ -4,7 +4,6 @@
 #include "lwip/err.h"
 
 #define MACROPAD_AP_SSID "macropad_setup"
-#define MACROPAD_MDNS_HOSTNAME "macropad"
 
 typedef enum {
     NETWORK_MODE_SETUP_AP,

@@ -17,9 +17,9 @@ int main(void) {
 
     app_config_init();
     const app_config_t boot_config = app_config_get();
-    printf("boot: config wifi_configured=%s ssid='%s'\n",
+    printf("boot: config wifi_configured=%s ssid='%s' mdns='%s.local'\n",
            app_config_has_wifi_credentials(&boot_config) ? "true" : "false",
-           boot_config.wifi_ssid);
+           boot_config.wifi_ssid, boot_config.mdns_hostname);
     for (size_t i = 0; i < APP_CONFIG_BUTTON_COUNT; i++) {
         printf("boot: button%lu method=%s url='%s'\n", (unsigned long)i,
                app_config_action_method_name(

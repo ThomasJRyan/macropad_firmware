@@ -143,6 +143,10 @@ return params;
 async function loadConfig(){
 const response=await fetch('/api/config');
 const config=await response.json();
+applyConfig(config);
+}
+
+function applyConfig(config){
 if(Array.isArray(config.buttons)){
 config.buttons.forEach((action,index)=>{
 const pinIndex=pins.indexOf(action.pin);
@@ -152,8 +156,23 @@ actions[target]=normalizeAction(action,pins[target]);
 }
 });
 }
+if(config.mdns_hostname){
+mdnsHostname.value=config.mdns_hostname;
+}
 renderKeys();
 loadEditor();
+}
+
+async function postForm(url,params){
+const response=await fetch(url,{
+method:'POST',
+headers:{'Content-Type':'application/x-www-form-urlencoded'},
+body:params
+});
+if(!response.ok){
+throw new Error('request failed');
+}
+return response.json();
 }
 
 keys.forEach(key=>{
@@ -167,17 +186,15 @@ loadEditor();
 
 form.elements.method.addEventListener('change',collectEditor);
 
-function resetCurrentButton(){
-actions[selectedIndex]=defaultAction(pins[selectedIndex]);
-renderKeys();
-loadEditor();
+async function resetCurrentButton(){
+const config=await postForm('/api/button/reset',new URLSearchParams({index:String(selectedIndex)}));
+applyConfig(config);
 status('Current button reset');
 }
 
-function resetAllButtons(){
-actions=pins.map(pin=>defaultAction(pin));
-renderKeys();
-loadEditor();
+async function resetAllButtons(){
+const config=await postForm('/api/buttons/reset-all',new URLSearchParams());
+applyConfig(config);
 status('All buttons reset');
 }
 
@@ -189,32 +206,51 @@ mdnsHostname.focus();
 }
 
 controlButtons.forEach(button=>{
-button.addEventListener('click',()=>{
+button.addEventListener('click',async ()=>{
 const command=button.dataset.command;
-if(command==='reset-current')resetCurrentButton();
-if(command==='reset-all')resetAllButtons();
-if(command==='reboot')status('Reboot endpoint not implemented');
-if(command==='factory-reset')status('Factory reset endpoint not implemented');
+try{
+if(command==='reset-current')await resetCurrentButton();
+if(command==='reset-all')await resetAllButtons();
+if(command==='reboot'){
+await postForm('/api/reboot',new URLSearchParams());
+status('Rebooting');
+}
+if(command==='factory-reset'){
+await postForm('/api/factory-reset',new URLSearchParams());
+actions=pins.map(pin=>defaultAction(pin));
+renderKeys();
+loadEditor();
+status('Factory reset started');
+}
 if(command==='mdns')toggleMdnsPanel();
+}catch(error){
+status('Command failed');
+}
 });
 });
 
-document.getElementById('save-mdns').addEventListener('click',()=>{
+document.getElementById('save-mdns').addEventListener('click',async ()=>{
 const hostname=mdnsHostname.value.trim()||'macropad';
 mdnsHostname.value=hostname;
-status('mDNS endpoint not implemented: '+hostname+'.local');
+try{
+const config=await postForm('/api/mdns',new URLSearchParams({hostname}));
+applyConfig(config);
+status('mDNS saved: '+mdnsHostname.value+'.local');
+}catch(error){
+status('mDNS save failed');
+}
 });
 
 form.addEventListener('submit',async event=>{
 event.preventDefault();
 collectEditor();
-const response=await fetch('/api/config',{
-method:'POST',
-headers:{'Content-Type':'application/x-www-form-urlencoded'},
-body:payload()
-});
-status(response.ok?'Button saved':'Button save failed');
-if(response.ok)loadConfig();
+try{
+const config=await postForm('/api/config',payload());
+applyConfig(config);
+status('Button saved');
+}catch(error){
+status('Button save failed');
+}
 });
 
 renderKeys();

@@ -10,7 +10,8 @@
 #include "pico/platform.h"
 
 #define CONFIG_MAGIC 0x4D504346u
-#define CONFIG_VERSION 5u
+#define CONFIG_VERSION 6u
+#define CONFIG_VERSION_5 5u
 #define CONFIG_VERSION_4 4u
 #define CONFIG_VERSION_3 3u
 #define CONFIG_VERSION_2 2u
@@ -32,9 +33,19 @@ typedef struct {
     uint32_t version;
     char wifi_ssid[APP_CONFIG_WIFI_SSID_MAX + 1u];
     char wifi_password[APP_CONFIG_WIFI_PASSWORD_MAX + 1u];
+    char mdns_hostname[APP_CONFIG_MDNS_HOSTNAME_MAX + 1u];
     app_config_button_action_t button_actions[APP_CONFIG_BUTTON_COUNT];
     uint32_t checksum;
 } config_flash_record_t;
+
+typedef struct {
+    uint32_t magic;
+    uint32_t version;
+    char wifi_ssid[APP_CONFIG_WIFI_SSID_MAX + 1u];
+    char wifi_password[APP_CONFIG_WIFI_PASSWORD_MAX + 1u];
+    app_config_button_action_t button_actions[APP_CONFIG_BUTTON_COUNT];
+    uint32_t checksum;
+} config_flash_record_v5_t;
 
 typedef struct {
     uint32_t magic;
@@ -114,6 +125,10 @@ static uint32_t config_checksum(const config_flash_record_t *record) {
     return checksum_bytes(record, offsetof(config_flash_record_t, checksum));
 }
 
+static uint32_t config_v5_checksum(const config_flash_record_v5_t *record) {
+    return checksum_bytes(record, offsetof(config_flash_record_v5_t, checksum));
+}
+
 static uint32_t config_v4_checksum(const config_flash_record_v4_t *record) {
     return checksum_bytes(record, offsetof(config_flash_record_v4_t, checksum));
 }
@@ -131,13 +146,22 @@ static uint32_t config_v1_checksum(const config_flash_record_v1_t *record) {
            record->frequency_tenths ^ 0xA5A55A5Au;
 }
 
-static app_config_t config_default(void) {
+app_config_button_action_t app_config_default_button_action(void) {
+    app_config_button_action_t action;
+    memset(&action, 0, sizeof(action));
+    action.method = APP_CONFIG_ACTION_DISABLED;
+    memcpy(action.content_type, "application/json",
+           sizeof("application/json"));
+    return action;
+}
+
+app_config_t app_config_default(void) {
     app_config_t config;
     memset(&config, 0, sizeof(config));
+    memcpy(config.mdns_hostname, APP_CONFIG_DEFAULT_MDNS_HOSTNAME,
+           sizeof(APP_CONFIG_DEFAULT_MDNS_HOSTNAME));
     for (size_t i = 0; i < APP_CONFIG_BUTTON_COUNT; i++) {
-        config.button_actions[i].method = APP_CONFIG_ACTION_DISABLED;
-        memcpy(config.button_actions[i].content_type, "application/json",
-               sizeof("application/json"));
+        config.button_actions[i] = app_config_default_button_action();
     }
     return config;
 }
@@ -204,6 +228,28 @@ static bool action_headers_valid(const char *value) {
     return !line_has_content || (line_has_colon && !line_name_empty);
 }
 
+static bool mdns_hostname_valid(const char *value) {
+    const size_t length =
+        bounded_string_length(value, APP_CONFIG_MDNS_HOSTNAME_MAX);
+
+    if (length == 0u || length > APP_CONFIG_MDNS_HOSTNAME_MAX ||
+        value[0] == '-' || value[length - 1u] == '-') {
+        return false;
+    }
+
+    for (size_t i = 0; i < length; i++) {
+        const char ch = value[i];
+        const bool alpha = (ch >= 'a' && ch <= 'z') ||
+                           (ch >= 'A' && ch <= 'Z');
+        const bool digit = ch >= '0' && ch <= '9';
+        if (!alpha && !digit && ch != '-') {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 bool app_config_validate(const app_config_t *config) {
     const size_t ssid_length =
         bounded_string_length(config->wifi_ssid, APP_CONFIG_WIFI_SSID_MAX);
@@ -211,7 +257,8 @@ bool app_config_validate(const app_config_t *config) {
         config->wifi_password, APP_CONFIG_WIFI_PASSWORD_MAX);
 
     if (ssid_length > APP_CONFIG_WIFI_SSID_MAX ||
-        password_length > APP_CONFIG_WIFI_PASSWORD_MAX) {
+        password_length > APP_CONFIG_WIFI_PASSWORD_MAX ||
+        !mdns_hostname_valid(config->mdns_hostname)) {
         return false;
     }
 
@@ -253,6 +300,8 @@ static bool config_record_valid(const config_flash_record_t *record) {
     memcpy(config.wifi_ssid, record->wifi_ssid, sizeof(config.wifi_ssid));
     memcpy(config.wifi_password, record->wifi_password,
            sizeof(config.wifi_password));
+    memcpy(config.mdns_hostname, record->mdns_hostname,
+           sizeof(config.mdns_hostname));
     memcpy(config.button_actions, record->button_actions,
            sizeof(config.button_actions));
 
@@ -262,8 +311,22 @@ static bool config_record_valid(const config_flash_record_t *record) {
            app_config_validate(&config);
 }
 
+static bool config_record_v5_valid(const config_flash_record_v5_t *record) {
+    app_config_t config = app_config_default();
+    memcpy(config.wifi_ssid, record->wifi_ssid, sizeof(config.wifi_ssid));
+    memcpy(config.wifi_password, record->wifi_password,
+           sizeof(config.wifi_password));
+    memcpy(config.button_actions, record->button_actions,
+           sizeof(config.button_actions));
+
+    return record->magic == CONFIG_MAGIC &&
+           record->version == CONFIG_VERSION_5 &&
+           record->checksum == config_v5_checksum(record) &&
+           app_config_validate(&config);
+}
+
 static bool config_record_v4_valid(const config_flash_record_v4_t *record) {
-    app_config_t config = config_default();
+    app_config_t config = app_config_default();
     memcpy(config.wifi_ssid, record->wifi_ssid, sizeof(config.wifi_ssid));
     memcpy(config.wifi_password, record->wifi_password,
            sizeof(config.wifi_password));
@@ -282,7 +345,7 @@ static bool config_record_v4_valid(const config_flash_record_v4_t *record) {
 }
 
 static bool config_record_v3_valid(const config_flash_record_v3_t *record) {
-    app_config_t config = config_default();
+    app_config_t config = app_config_default();
     memcpy(config.wifi_ssid, record->wifi_ssid, sizeof(config.wifi_ssid));
     memcpy(config.wifi_password, record->wifi_password,
            sizeof(config.wifi_password));
@@ -306,7 +369,7 @@ static bool config_record_v3_valid(const config_flash_record_v3_t *record) {
 }
 
 static bool config_record_v2_valid(const config_flash_record_v2_t *record) {
-    app_config_t config = config_default();
+    app_config_t config = app_config_default();
     memcpy(config.wifi_ssid, record->wifi_ssid, sizeof(config.wifi_ssid));
     memcpy(config.wifi_password, record->wifi_password,
            sizeof(config.wifi_password));
@@ -318,7 +381,7 @@ static bool config_record_v2_valid(const config_flash_record_v2_t *record) {
 }
 
 static bool config_record_v1_valid(const config_flash_record_v1_t *record) {
-    const app_config_t config = config_default();
+    const app_config_t config = app_config_default();
 
     return record->magic == CONFIG_MAGIC &&
            record->version == CONFIG_VERSION_1 &&
@@ -335,6 +398,8 @@ static config_flash_record_t config_record_from_app(
     memcpy(record.wifi_ssid, config->wifi_ssid, sizeof(record.wifi_ssid));
     memcpy(record.wifi_password, config->wifi_password,
            sizeof(record.wifi_password));
+    memcpy(record.mdns_hostname, config->mdns_hostname,
+           sizeof(record.mdns_hostname));
     memcpy(record.button_actions, config->button_actions,
            sizeof(record.button_actions));
     record.checksum = config_checksum(&record);
@@ -354,7 +419,7 @@ void app_config_init(void) {
     hard_assert((uintptr_t)&__flash_binary_end - XIP_BASE <=
                 CONFIG_FLASH_OFFSET);
 
-    app_config_t config = config_default();
+    app_config_t config = app_config_default();
     const config_flash_record_t *stored =
         (const config_flash_record_t *)(XIP_BASE + CONFIG_FLASH_OFFSET);
 
@@ -365,6 +430,9 @@ void app_config_init(void) {
         memcpy(config.wifi_password, stored->wifi_password,
                sizeof(config.wifi_password));
         config.wifi_password[APP_CONFIG_WIFI_PASSWORD_MAX] = '\0';
+        memcpy(config.mdns_hostname, stored->mdns_hostname,
+               sizeof(config.mdns_hostname));
+        config.mdns_hostname[APP_CONFIG_MDNS_HOSTNAME_MAX] = '\0';
         memcpy(config.button_actions, stored->button_actions,
                sizeof(config.button_actions));
         for (size_t i = 0; i < APP_CONFIG_BUTTON_COUNT; i++) {
@@ -376,12 +444,34 @@ void app_config_init(void) {
                 '\0';
         }
     } else {
+        const config_flash_record_v5_t *stored_v5 =
+            (const config_flash_record_v5_t *)(XIP_BASE +
+                                               CONFIG_FLASH_OFFSET);
         const uintptr_t legacy_storage = XIP_BASE + CONFIG_LEGACY_FLASH_OFFSET;
         const config_flash_record_v4_t *stored_v4 =
             (const config_flash_record_v4_t *)legacy_storage;
         const config_flash_record_v3_t *stored_v3 =
             (const config_flash_record_v3_t *)legacy_storage;
-        if (config_record_v4_valid(stored_v4)) {
+        if (config_record_v5_valid(stored_v5)) {
+            memcpy(config.wifi_ssid, stored_v5->wifi_ssid,
+                   sizeof(config.wifi_ssid));
+            config.wifi_ssid[APP_CONFIG_WIFI_SSID_MAX] = '\0';
+            memcpy(config.wifi_password, stored_v5->wifi_password,
+                   sizeof(config.wifi_password));
+            config.wifi_password[APP_CONFIG_WIFI_PASSWORD_MAX] = '\0';
+            memcpy(config.button_actions, stored_v5->button_actions,
+                   sizeof(config.button_actions));
+            for (size_t i = 0; i < APP_CONFIG_BUTTON_COUNT; i++) {
+                config.button_actions[i].url[APP_CONFIG_ACTION_URL_MAX] =
+                    '\0';
+                config.button_actions[i].body[APP_CONFIG_ACTION_BODY_MAX] =
+                    '\0';
+                config.button_actions[i]
+                    .content_type[APP_CONFIG_ACTION_CONTENT_TYPE_MAX] = '\0';
+                config.button_actions[i]
+                    .headers[APP_CONFIG_ACTION_HEADERS_MAX] = '\0';
+            }
+        } else if (config_record_v4_valid(stored_v4)) {
             memcpy(config.wifi_ssid, stored_v4->wifi_ssid,
                    sizeof(config.wifi_ssid));
             config.wifi_ssid[APP_CONFIG_WIFI_SSID_MAX] = '\0';
@@ -438,7 +528,7 @@ void app_config_init(void) {
                 const config_flash_record_v1_t *stored_v1 =
                     (const config_flash_record_v1_t *)legacy_storage;
                 if (config_record_v1_valid(stored_v1)) {
-                    config = config_default();
+                    config = app_config_default();
                 }
             }
         }

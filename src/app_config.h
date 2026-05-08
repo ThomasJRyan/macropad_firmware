@@ -8,6 +8,8 @@
 #define APP_CONFIG_WIFI_SSID_MAX 32u
 #define APP_CONFIG_WIFI_PASSWORD_MAX 63u
 #define APP_CONFIG_BUTTON_COUNT 6u
+#define APP_CONFIG_MDNS_HOSTNAME_MAX 32u
+#define APP_CONFIG_DEFAULT_MDNS_HOSTNAME "macropad"
 #define APP_CONFIG_ACTION_URL_MAX 128u
 #define APP_CONFIG_ACTION_BODY_MAX 512u
 #define APP_CONFIG_ACTION_CONTENT_TYPE_MAX 64u
@@ -30,10 +32,13 @@ typedef struct {
 typedef struct {
     char wifi_ssid[APP_CONFIG_WIFI_SSID_MAX + 1u];
     char wifi_password[APP_CONFIG_WIFI_PASSWORD_MAX + 1u];
+    char mdns_hostname[APP_CONFIG_MDNS_HOSTNAME_MAX + 1u];
     app_config_button_action_t button_actions[APP_CONFIG_BUTTON_COUNT];
 } app_config_t;
 
 void app_config_init(void);
+app_config_t app_config_default(void);
+app_config_button_action_t app_config_default_button_action(void);
 app_config_t app_config_get(void);
 bool app_config_save(const app_config_t *config);
 bool app_config_validate(const app_config_t *config);

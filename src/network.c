@@ -9,6 +9,7 @@
 #include "app_config.h"
 #include "cyw43.h"
 #include "dhserver.h"
+#include "hardware/watchdog.h"
 #include "lwip/apps/mdns.h"
 #include "lwip/ip4_addr.h"
 #include "lwip/netif.h"
@@ -21,7 +22,7 @@
 #define HTTP_PORT 80
 #define HTTP_BACKLOG 1
 #define HTTP_POLL_INTERVAL 10
-#define HTTP_REQUEST_MAX 14336
+#define HTTP_REQUEST_MAX 24576
 #define HTTP_RESPONSE_MAX 14336
 
 #define DHCP_SERVER_PORT 67
@@ -113,6 +114,8 @@ static volatile uint32_t http_response_count;
 static volatile err_t last_http_start_err;
 static volatile err_t last_mdns_start_err;
 static absolute_time_t next_network_debug_at;
+static bool reboot_pending;
+static absolute_time_t reboot_at;
 
 static void ip_to_string(const ip_addr_t *addr, char *buffer,
                          size_t buffer_size) {
@@ -473,6 +476,24 @@ static bool http_optional_param_value(const char *body, const char *query,
     return true;
 }
 
+static bool parse_size_param(const char *value, size_t *result) {
+    if (value[0] == '\0') {
+        return false;
+    }
+
+    size_t parsed = 0;
+    for (size_t i = 0; value[i] != '\0'; i++) {
+        if (value[i] < '0' || value[i] > '9') {
+            return false;
+        }
+
+        parsed = (parsed * 10u) + (size_t)(value[i] - '0');
+    }
+
+    *result = parsed;
+    return true;
+}
+
 static bool parse_action_method(const char *value,
                                 app_config_action_method_t *method) {
     if (strcmp(value, "DISABLED") == 0 || strcmp(value, "disabled") == 0) {
@@ -590,6 +611,68 @@ static bool http_parse_wifi_config(const char *request, app_config_t *config) {
     return true;
 }
 
+static bool http_parse_button_index(const char *request, size_t *index) {
+    char value[12];
+    const char *body = http_request_body(request);
+    const char *query = http_request_query(request);
+
+    if (!http_param_value(body, "index", value, sizeof(value)) &&
+        !http_param_value(query, "index", value, sizeof(value))) {
+        return false;
+    }
+
+    return parse_size_param(value, index) &&
+           *index < APP_CONFIG_BUTTON_COUNT;
+}
+
+static bool http_parse_mdns_config(const char *request, app_config_t *config) {
+    char hostname[APP_CONFIG_MDNS_HOSTNAME_MAX + 1u];
+    const char *body = http_request_body(request);
+    const char *query = http_request_query(request);
+
+    const bool has_hostname =
+        http_param_value(body, "hostname", hostname, sizeof(hostname)) ||
+        http_param_value(query, "hostname", hostname, sizeof(hostname));
+    if (!has_hostname) {
+        return false;
+    }
+
+    app_config_t candidate = *config;
+    memset(candidate.mdns_hostname, 0, sizeof(candidate.mdns_hostname));
+    memcpy(candidate.mdns_hostname, hostname, strlen(hostname));
+
+    if (!app_config_validate(&candidate)) {
+        return false;
+    }
+
+    *config = candidate;
+    return true;
+}
+
+static void schedule_reboot(uint32_t delay_ms) {
+    reboot_pending = true;
+    reboot_at = make_timeout_time_ms(delay_ms);
+    printf("network: reboot scheduled in %lu ms\n", (unsigned long)delay_ms);
+}
+
+static err_t apply_mdns_hostname(const char *hostname) {
+    if (current_mode != NETWORK_MODE_STATION || !mdns_initialized) {
+        return ERR_OK;
+    }
+
+    struct netif *netif = &cyw43_state.netif[CYW43_ITF_STA];
+    if (!mdns_resp_netif_active(netif)) {
+        return ERR_OK;
+    }
+
+    const err_t err = mdns_resp_rename_netif(netif, hostname);
+    if (err == ERR_OK) {
+        mdns_resp_announce(netif);
+    }
+    printf("mdns: rename hostname='%s' err=%d\n", hostname, (int)err);
+    return err;
+}
+
 static size_t http_build_config_response(char *response, size_t response_size,
                                          const app_config_t *config) {
     size_t length = http_format(
@@ -602,6 +685,9 @@ static size_t http_build_config_response(char *response, size_t response_size,
         app_config_has_wifi_credentials(config) ? "true" : "false");
 
     json_append_string(response, response_size, &length, config->wifi_ssid);
+    http_append(response, response_size, &length, ",\"mdns_hostname\":");
+    json_append_string(response, response_size, &length,
+                       config->mdns_hostname);
     http_append(response, response_size, &length, ",\"buttons\":[");
 
     for (size_t i = 0; i < APP_CONFIG_BUTTON_COUNT; i++) {
@@ -684,6 +770,18 @@ static size_t http_build_styles_response(char *response,
     return http_build_asset_response(response, response_size,
                                      "text/css; charset=utf-8",
                                      UI_STYLES_CSS, UI_STYLES_CSS_LEN);
+}
+
+static size_t http_build_json_status_response(char *response,
+                                              size_t response_size,
+                                              const char *status) {
+    return http_format(response, response_size,
+                       "HTTP/1.0 200 OK\r\n"
+                       "Content-Type: application/json\r\n"
+                       "Connection: close\r\n"
+                       "\r\n"
+                       "{\"status\":\"%s\"}\n",
+                       status);
 }
 
 static void wifi_scan_state_init(void) {
@@ -878,6 +976,96 @@ static size_t http_build_response(const char *request, char *response,
         return http_build_config_response(response, response_size, &config);
     }
 
+    if (http_request_matches(request, "POST", "/api/button/reset")) {
+        printf("http: route POST /api/button/reset\n");
+        size_t index = 0;
+        if (!http_parse_button_index(request, &index)) {
+            printf("http: button reset parse failed\n");
+            return http_copy_response(response, response_size,
+                                      bad_request_response);
+        }
+
+        app_config_t config = app_config_get();
+        config.button_actions[index] = app_config_default_button_action();
+        if (!app_config_save(&config)) {
+            printf("http: button reset save failed index=%lu\n",
+                   (unsigned long)index);
+            return http_copy_response(response, response_size,
+                                      server_error_response);
+        }
+
+        printf("http: button reset saved index=%lu pin=GP%u\n",
+               (unsigned long)index,
+               (unsigned int)app_config_button_pin(index));
+        return http_build_config_response(response, response_size, &config);
+    }
+
+    if (http_request_matches(request, "POST", "/api/buttons/reset-all")) {
+        printf("http: route POST /api/buttons/reset-all\n");
+        app_config_t config = app_config_get();
+        for (size_t i = 0; i < APP_CONFIG_BUTTON_COUNT; i++) {
+            config.button_actions[i] = app_config_default_button_action();
+        }
+
+        if (!app_config_save(&config)) {
+            printf("http: button reset-all save failed\n");
+            return http_copy_response(response, response_size,
+                                      server_error_response);
+        }
+
+        printf("http: all buttons reset saved\n");
+        return http_build_config_response(response, response_size, &config);
+    }
+
+    if (http_request_matches(request, "POST", "/api/mdns")) {
+        printf("http: route POST /api/mdns\n");
+        app_config_t config = app_config_get();
+        if (!http_parse_mdns_config(request, &config)) {
+            printf("http: mdns config parse failed\n");
+            return http_copy_response(response, response_size,
+                                      bad_request_response);
+        }
+
+        if (!app_config_save(&config)) {
+            printf("http: mdns config save failed\n");
+            return http_copy_response(response, response_size,
+                                      server_error_response);
+        }
+
+        const err_t mdns_err = apply_mdns_hostname(config.mdns_hostname);
+        if (mdns_err != ERR_OK) {
+            printf("http: mdns apply failed err=%d\n", (int)mdns_err);
+            return http_copy_response(response, response_size,
+                                      server_error_response);
+        }
+
+        printf("http: mdns hostname saved hostname='%s'\n",
+               config.mdns_hostname);
+        return http_build_config_response(response, response_size, &config);
+    }
+
+    if (http_request_matches(request, "POST", "/api/reboot")) {
+        printf("http: route POST /api/reboot\n");
+        schedule_reboot(500u);
+        return http_build_json_status_response(response, response_size,
+                                               "rebooting");
+    }
+
+    if (http_request_matches(request, "POST", "/api/factory-reset")) {
+        printf("http: route POST /api/factory-reset\n");
+        const app_config_t config = app_config_default();
+        if (!app_config_save(&config)) {
+            printf("http: factory reset save failed\n");
+            return http_copy_response(response, response_size,
+                                      server_error_response);
+        }
+
+        printf("http: factory reset saved, rebooting\n");
+        schedule_reboot(500u);
+        return http_build_json_status_response(response, response_size,
+                                               "factory_reset");
+    }
+
     if (http_request_matches(request, "GET", "/api/wifi/scan")) {
         printf("http: route GET /api/wifi/scan\n");
         return http_build_scan_response(response, response_size);
@@ -916,6 +1104,11 @@ static size_t http_build_response(const char *request, char *response,
     if (http_path_matches(request, "/api/config") ||
         http_path_matches(request, "/api/wifi") ||
         http_path_matches(request, "/api/wifi/scan") ||
+        http_path_matches(request, "/api/button/reset") ||
+        http_path_matches(request, "/api/buttons/reset-all") ||
+        http_path_matches(request, "/api/mdns") ||
+        http_path_matches(request, "/api/reboot") ||
+        http_path_matches(request, "/api/factory-reset") ||
         http_path_matches(request, "/styles.css") ||
         http_path_matches(request, "/index.html") ||
         http_path_matches(request, "/wifi_setup.html")) {
@@ -1120,13 +1313,14 @@ static void mdns_http_txt(struct mdns_service *service, void *txt_userdata) {
 
 static err_t mdns_server_start(void) {
     struct netif *netif = &cyw43_state.netif[CYW43_ITF_STA];
+    const app_config_t config = app_config_get();
 
     if (!mdns_initialized) {
         mdns_resp_init();
         mdns_initialized = true;
     }
 
-    err_t err = mdns_resp_add_netif(netif, MACROPAD_MDNS_HOSTNAME);
+    err_t err = mdns_resp_add_netif(netif, config.mdns_hostname);
     if (err != ERR_OK) {
         printf("mdns: add netif failed err=%d\n", (int)err);
         return err;
@@ -1138,7 +1332,7 @@ static err_t mdns_server_start(void) {
     (void)service;
 
     mdns_resp_announce(netif);
-    printf("mdns: announced %s.local service=%d\n", MACROPAD_MDNS_HOSTNAME,
+    printf("mdns: announced %s.local service=%d\n", config.mdns_hostname,
            (int)service);
     return ERR_OK;
 }
@@ -1250,6 +1444,15 @@ network_start_result_t network_start(void) {
 }
 
 void network_debug_poll(void) {
+    if (reboot_pending && time_reached(reboot_at)) {
+        printf("network: rebooting now\n");
+        fflush(stdout);
+        watchdog_reboot(0, 0, 0);
+        while (true) {
+            tight_loop_contents();
+        }
+    }
+
 #if NETWORK_PERIODIC_DEBUG
     if (!time_reached(next_network_debug_at)) {
         return;
