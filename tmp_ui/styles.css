@@ -114,6 +114,15 @@ form {
   gap: 18px;
 }
 
+.device-controls {
+  display: grid;
+  margin-top: 32px;
+  padding-top: 24px;
+  border-top: 1px solid rgba(183, 148, 255, 0.22);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
 section,
 .editor-panel {
   position: relative;
@@ -266,6 +275,78 @@ button:active {
   transform: translateY(0);
 }
 
+.control-button {
+  min-height: 44px;
+  margin: 0;
+  padding: 10px 12px;
+  border-color: rgba(183, 148, 255, 0.3);
+  border-radius: 13px;
+  color: var(--text);
+  background:
+    linear-gradient(180deg, rgba(61, 41, 100, 0.88), rgba(19, 11, 36, 0.92)),
+    var(--surface-strong);
+  box-shadow:
+    0 8px 20px rgba(0, 0, 0, 0.24),
+    inset 0 1px 0 rgba(255, 255, 255, 0.12);
+  font-size: 0.9rem;
+}
+
+.control-button:hover {
+  box-shadow:
+    0 10px 24px rgba(0, 0, 0, 0.28),
+    0 0 20px rgba(74, 222, 128, 0.1),
+    inset 0 1px 0 rgba(255, 255, 255, 0.14);
+}
+
+.control-button.is-danger {
+  grid-column: 1 / -1;
+  border-color: rgba(251, 113, 133, 0.46);
+  color: #ffe3e8;
+  background:
+    linear-gradient(180deg, rgba(127, 29, 29, 0.72), rgba(64, 12, 29, 0.9)),
+    rgba(64, 12, 29, 0.88);
+}
+
+.control-button.is-danger:hover {
+  border-color: rgba(251, 113, 133, 0.72);
+  box-shadow:
+    0 10px 24px rgba(0, 0, 0, 0.28),
+    0 0 22px rgba(251, 113, 133, 0.14),
+    inset 0 1px 0 rgba(255, 255, 255, 0.12);
+}
+
+.mdns-panel {
+  margin-top: 14px;
+  padding: 14px;
+  border: 1px solid rgba(183, 148, 255, 0.22);
+  border-radius: 16px;
+  background: rgba(8, 5, 19, 0.46);
+}
+
+.mdns-panel[hidden] {
+  display: none;
+}
+
+.mdns-panel label {
+  margin-top: 0;
+}
+
+.mdns-field {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+}
+
+.mdns-field span {
+  color: var(--muted);
+  font-weight: 780;
+}
+
+#save-mdns {
+  margin-top: 12px;
+}
+
 .key {
   position: relative;
   display: flex;
@@ -410,6 +491,12 @@ button:active {
 
   .key-grid {
     gap: 12px;
+  }
+
+  .device-controls {
+    margin-top: 24px;
+    padding-top: 18px;
+    grid-template-columns: 1fr;
   }
 
   .key {
