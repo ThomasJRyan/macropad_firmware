@@ -417,28 +417,49 @@ static bool rest_build_request(rest_connection_t *connection) {
             ? connection->action.body
             : "";
     const size_t body_len = strlen(body);
+    char host_header[REST_CLIENT_HOST_MAX + 8u];
+
+    if (connection->url.port == 80u) {
+        snprintf(host_header, sizeof(host_header), "%s",
+                 connection->url.host);
+    } else {
+        snprintf(host_header, sizeof(host_header), "%s:%u",
+                 connection->url.host, (unsigned int)connection->url.port);
+    }
 
     int written = 0;
-    if (connection->action.method == APP_CONFIG_ACTION_POST) {
+    if (connection->action.method == APP_CONFIG_ACTION_POST &&
+        body_len > 0u) {
         written = snprintf(connection->request, sizeof(connection->request),
                            "POST %s HTTP/1.1\r\n"
                            "Host: %s\r\n"
                            "User-Agent: macropad-pico\r\n"
+                           "Accept: */*\r\n"
                            "Content-Type: application/json\r\n"
                            "Content-Length: %lu\r\n"
                            "Connection: close\r\n"
                            "\r\n"
                            "%s",
-                           connection->url.path, connection->url.host,
+                           connection->url.path, host_header,
                            (unsigned long)body_len, body);
+    } else if (connection->action.method == APP_CONFIG_ACTION_POST) {
+        written = snprintf(connection->request, sizeof(connection->request),
+                           "POST %s HTTP/1.1\r\n"
+                           "Host: %s\r\n"
+                           "User-Agent: macropad-pico\r\n"
+                           "Accept: */*\r\n"
+                           "Connection: close\r\n"
+                           "\r\n",
+                           connection->url.path, host_header);
     } else {
         written = snprintf(connection->request, sizeof(connection->request),
                            "GET %s HTTP/1.1\r\n"
                            "Host: %s\r\n"
                            "User-Agent: macropad-pico\r\n"
+                           "Accept: */*\r\n"
                            "Connection: close\r\n"
                            "\r\n",
-                           connection->url.path, connection->url.host);
+                           connection->url.path, host_header);
     }
 
     if (written < 0 || (size_t)written >= sizeof(connection->request)) {
@@ -449,6 +470,10 @@ static bool rest_build_request(rest_connection_t *connection) {
     }
 
     connection->request_len = (size_t)written;
+    printf("rest: built request button=%lu method=%s host='%s' body_len=%lu "
+           "bytes=%lu\n",
+           (unsigned long)connection->button_index, method, host_header,
+           (unsigned long)body_len, (unsigned long)connection->request_len);
     return true;
 }
 
