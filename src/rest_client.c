@@ -13,7 +13,11 @@
 #include "lwip/ip4.h"
 #include "lwip/ip_addr.h"
 #include "lwip/netif.h"
+#include "lwip/pbuf.h"
+#include "lwip/prot/dns.h"
+#include "lwip/prot/iana.h"
 #include "lwip/tcp.h"
+#include "lwip/udp.h"
 #include "pico/cyw43_arch.h"
 #include "pico/time.h"
 
@@ -25,6 +29,16 @@
 #define REST_CLIENT_TIMEOUT_POLLS 6
 #define REST_CLIENT_CONNECT_TIMEOUT_MS 15000
 #define REST_CLIENT_CONNECT_LOG_INTERVAL_MS 1000
+#define REST_CLIENT_MDNS_PACKET_MAX 768u
+#define REST_CLIENT_MDNS_QUERY_MAX 256u
+#define REST_CLIENT_MDNS_TIMEOUT_MS 5000
+#define REST_CLIENT_MDNS_RETRY_MS 1000
+#define REST_CLIENT_MDNS_MULTICAST_A 224
+#define REST_CLIENT_MDNS_MULTICAST_B 0
+#define REST_CLIENT_MDNS_MULTICAST_C 0
+#define REST_CLIENT_MDNS_MULTICAST_D 251
+#define REST_DNS_CLASS_QU 0x8000u
+#define REST_DNS_CLASS_MASK 0x7fffu
 
 typedef struct {
     char host[REST_CLIENT_HOST_MAX + 1u];
@@ -37,6 +51,7 @@ typedef struct {
     size_t button_index;
     app_config_button_action_t action;
     parsed_url_t url;
+    struct udp_pcb *mdns_pcb;
     struct tcp_pcb *pcb;
     bool connected;
     char request[REST_CLIENT_REQUEST_MAX];
@@ -44,11 +59,53 @@ typedef struct {
     size_t bytes_acked;
     size_t response_bytes;
     uint8_t poll_count;
+    uint8_t mdns_query_count;
+    absolute_time_t mdns_deadline;
+    absolute_time_t next_mdns_query;
     absolute_time_t connect_deadline;
     absolute_time_t next_connect_log;
 } rest_connection_t;
 
 static rest_connection_t connections[REST_CLIENT_MAX_CONNECTIONS];
+
+static void rest_connect_to_addr(rest_connection_t *connection,
+                                 const ip_addr_t *addr);
+
+static int rest_ascii_tolower(int ch) {
+    if (ch >= 'A' && ch <= 'Z') {
+        return ch + ('a' - 'A');
+    }
+
+    return ch;
+}
+
+static int rest_strcasecmp(const char *left, const char *right) {
+    while (*left != '\0' || *right != '\0') {
+        const int left_ch = rest_ascii_tolower((unsigned char)*left);
+        const int right_ch = rest_ascii_tolower((unsigned char)*right);
+        if (left_ch != right_ch) {
+            return left_ch - right_ch;
+        }
+
+        if (*left != '\0') {
+            left++;
+        }
+        if (*right != '\0') {
+            right++;
+        }
+    }
+
+    return 0;
+}
+
+static bool rest_host_is_mdns(const char *host) {
+    const size_t length = strlen(host);
+    static const char suffix[] = ".local";
+    const size_t suffix_length = sizeof(suffix) - 1u;
+
+    return length > suffix_length &&
+           rest_strcasecmp(host + length - suffix_length, suffix) == 0;
+}
 
 static void rest_ip_to_string(const ip_addr_t *addr, char *buffer,
                               size_t buffer_size) {
@@ -152,8 +209,19 @@ static void rest_log_arp(const char *label, struct netif *netif,
            eth->addr[3], eth->addr[4], eth->addr[5]);
 }
 
+static void rest_mdns_stop(rest_connection_t *connection) {
+    if (connection->mdns_pcb == NULL) {
+        return;
+    }
+
+    udp_recv(connection->mdns_pcb, NULL, NULL);
+    udp_remove(connection->mdns_pcb);
+    connection->mdns_pcb = NULL;
+}
+
 static void rest_connection_free(rest_connection_t *connection) {
     if (connection != NULL) {
+        rest_mdns_stop(connection);
         memset(connection, 0, sizeof(*connection));
     }
 }
@@ -384,6 +452,293 @@ static bool rest_build_request(rest_connection_t *connection) {
     return true;
 }
 
+static uint16_t rest_dns_read_u16(const uint8_t *packet, size_t offset) {
+    return (uint16_t)(((uint16_t)packet[offset] << 8u) |
+                      (uint16_t)packet[offset + 1u]);
+}
+
+static uint32_t rest_dns_read_u32(const uint8_t *packet, size_t offset) {
+    return ((uint32_t)packet[offset] << 24u) |
+           ((uint32_t)packet[offset + 1u] << 16u) |
+           ((uint32_t)packet[offset + 2u] << 8u) |
+           (uint32_t)packet[offset + 3u];
+}
+
+static bool rest_dns_decode_name(const uint8_t *packet, size_t packet_len,
+                                 size_t offset, char *name,
+                                 size_t name_size, size_t *next_offset) {
+    size_t pos = offset;
+    size_t out = 0;
+    bool jumped = false;
+    unsigned int jumps = 0;
+
+    if (name_size == 0u) {
+        return false;
+    }
+
+    while (true) {
+        if (pos >= packet_len) {
+            return false;
+        }
+
+        const uint8_t label_len = packet[pos];
+        if (label_len == 0u) {
+            if (!jumped) {
+                *next_offset = pos + 1u;
+            }
+            name[out] = '\0';
+            return true;
+        }
+
+        if ((label_len & 0xc0u) == 0xc0u) {
+            if (pos + 1u >= packet_len) {
+                return false;
+            }
+
+            const size_t pointer =
+                (((size_t)label_len & 0x3fu) << 8u) | packet[pos + 1u];
+            if (pointer >= packet_len || jumps++ > 8u) {
+                return false;
+            }
+
+            if (!jumped) {
+                *next_offset = pos + 2u;
+                jumped = true;
+            }
+            pos = pointer;
+            continue;
+        }
+
+        if ((label_len & 0xc0u) != 0u) {
+            return false;
+        }
+
+        pos++;
+        if (pos + label_len > packet_len) {
+            return false;
+        }
+
+        if (out > 0u) {
+            if (out + 1u >= name_size) {
+                return false;
+            }
+            name[out++] = '.';
+        }
+
+        if (out + label_len >= name_size) {
+            return false;
+        }
+        for (size_t i = 0; i < label_len; i++) {
+            name[out++] = (char)rest_ascii_tolower(packet[pos + i]);
+        }
+
+        pos += label_len;
+    }
+}
+
+static bool rest_dns_write_name(uint8_t *packet, size_t packet_size,
+                                size_t *offset, const char *name) {
+    const char *cursor = name;
+
+    while (*cursor != '\0') {
+        const char *dot = strchr(cursor, '.');
+        const size_t label_len =
+            dot == NULL ? strlen(cursor) : (size_t)(dot - cursor);
+        if (label_len == 0u || label_len > 63u ||
+            *offset + label_len + 1u >= packet_size) {
+            return false;
+        }
+
+        packet[(*offset)++] = (uint8_t)label_len;
+        memcpy(packet + *offset, cursor, label_len);
+        *offset += label_len;
+
+        if (dot == NULL) {
+            break;
+        }
+        cursor = dot + 1;
+    }
+
+    if (*offset >= packet_size) {
+        return false;
+    }
+
+    packet[(*offset)++] = 0;
+    return true;
+}
+
+static bool rest_mdns_parse_response(const uint8_t *packet, size_t packet_len,
+                                     const char *host, ip_addr_t *addr) {
+    if (packet_len < SIZEOF_DNS_HDR) {
+        return false;
+    }
+
+    const uint16_t question_count = rest_dns_read_u16(packet, 4);
+    const uint16_t answer_count = rest_dns_read_u16(packet, 6);
+    const uint16_t authority_count = rest_dns_read_u16(packet, 8);
+    const uint16_t additional_count = rest_dns_read_u16(packet, 10);
+    const uint32_t record_count = (uint32_t)answer_count + authority_count +
+                                  additional_count;
+    size_t offset = SIZEOF_DNS_HDR;
+
+    for (uint16_t i = 0; i < question_count; i++) {
+        char name[REST_CLIENT_HOST_MAX + 1u];
+        size_t next = 0;
+        if (!rest_dns_decode_name(packet, packet_len, offset, name,
+                                  sizeof(name), &next) ||
+            next + 4u > packet_len) {
+            return false;
+        }
+        offset = next + 4u;
+    }
+
+    for (uint32_t i = 0; i < record_count; i++) {
+        char record_name[REST_CLIENT_HOST_MAX + 1u];
+        size_t next = 0;
+        if (!rest_dns_decode_name(packet, packet_len, offset, record_name,
+                                  sizeof(record_name), &next) ||
+            next + 10u > packet_len) {
+            return false;
+        }
+
+        const uint16_t type = rest_dns_read_u16(packet, next);
+        const uint16_t record_class =
+            rest_dns_read_u16(packet, next + 2u) & REST_DNS_CLASS_MASK;
+        (void)rest_dns_read_u32(packet, next + 4u);
+        const uint16_t rdlength = rest_dns_read_u16(packet, next + 8u);
+        const size_t rdata = next + 10u;
+        if (rdata + rdlength > packet_len) {
+            return false;
+        }
+
+        if (type == DNS_RRTYPE_A && record_class == DNS_RRCLASS_IN &&
+            rdlength == 4u && rest_strcasecmp(record_name, host) == 0) {
+            IP_ADDR4(addr, packet[rdata], packet[rdata + 1u],
+                     packet[rdata + 2u], packet[rdata + 3u]);
+            return true;
+        }
+
+        offset = rdata + rdlength;
+    }
+
+    return false;
+}
+
+static err_t rest_mdns_send_query(rest_connection_t *connection) {
+    uint8_t query[REST_CLIENT_MDNS_QUERY_MAX];
+    memset(query, 0, sizeof(query));
+    query[5] = 1u;
+
+    size_t offset = SIZEOF_DNS_HDR;
+    if (!rest_dns_write_name(query, sizeof(query), &offset,
+                             connection->url.host) ||
+        offset + 4u > sizeof(query)) {
+        printf("rest: mdns query build failed host=%s\n",
+               connection->url.host);
+        return ERR_VAL;
+    }
+
+    query[offset++] = 0;
+    query[offset++] = DNS_RRTYPE_A;
+    const uint16_t question_class = REST_DNS_CLASS_QU | DNS_RRCLASS_IN;
+    query[offset++] = (uint8_t)(question_class >> 8u);
+    query[offset++] = (uint8_t)(question_class & 0xffu);
+
+    struct pbuf *p = pbuf_alloc(PBUF_TRANSPORT, (u16_t)offset, PBUF_RAM);
+    if (p == NULL) {
+        return ERR_MEM;
+    }
+
+    err_t err = pbuf_take(p, query, (u16_t)offset);
+    if (err == ERR_OK) {
+        ip_addr_t multicast_addr;
+        IP_ADDR4(&multicast_addr, REST_CLIENT_MDNS_MULTICAST_A,
+                 REST_CLIENT_MDNS_MULTICAST_B, REST_CLIENT_MDNS_MULTICAST_C,
+                 REST_CLIENT_MDNS_MULTICAST_D);
+        err = udp_sendto_if(connection->mdns_pcb, p, &multicast_addr,
+                            LWIP_IANA_PORT_MDNS,
+                            &cyw43_state.netif[CYW43_ITF_STA]);
+    }
+    pbuf_free(p);
+
+    printf("rest: mdns query button=%lu host=%s err=%d attempt=%u\n",
+           (unsigned long)connection->button_index, connection->url.host,
+           (int)err, (unsigned int)(connection->mdns_query_count + 1u));
+    if (err == ERR_OK) {
+        connection->mdns_query_count++;
+    }
+    return err;
+}
+
+static void rest_mdns_recv(void *arg, struct udp_pcb *pcb, struct pbuf *p,
+                           const ip_addr_t *addr, u16_t port) {
+    (void)pcb;
+    rest_connection_t *connection = (rest_connection_t *)arg;
+    uint8_t packet[REST_CLIENT_MDNS_PACKET_MAX];
+    const size_t packet_len =
+        p->tot_len > sizeof(packet) ? sizeof(packet) : p->tot_len;
+    pbuf_copy_partial(p, packet, (u16_t)packet_len, 0);
+    pbuf_free(p);
+
+    ip_addr_t resolved_addr;
+    if (!rest_mdns_parse_response(packet, packet_len, connection->url.host,
+                                  &resolved_addr)) {
+        char source_ip[16];
+        rest_ip_to_string(addr, source_ip, sizeof(source_ip));
+        printf("rest: mdns response ignored host=%s from=%s:%u len=%lu\n",
+               connection->url.host, source_ip, (unsigned int)port,
+               (unsigned long)packet_len);
+        return;
+    }
+
+    char resolved_ip[16];
+    rest_ip_to_string(&resolved_addr, resolved_ip, sizeof(resolved_ip));
+    printf("rest: mdns resolved button=%lu host=%s ip=%s\n",
+           (unsigned long)connection->button_index, connection->url.host,
+           resolved_ip);
+
+    rest_mdns_stop(connection);
+    rest_connect_to_addr(connection, &resolved_addr);
+}
+
+static err_t rest_mdns_start(rest_connection_t *connection) {
+    connection->mdns_pcb = udp_new_ip_type(IPADDR_TYPE_V4);
+    if (connection->mdns_pcb == NULL) {
+        printf("rest: mdns udp_new failed button=%lu\n",
+               (unsigned long)connection->button_index);
+        return ERR_MEM;
+    }
+
+#if LWIP_MULTICAST_TX_OPTIONS
+    udp_set_multicast_ttl(connection->mdns_pcb, 255);
+#else
+    connection->mdns_pcb->ttl = 255;
+#endif
+    udp_bind_netif(connection->mdns_pcb, &cyw43_state.netif[CYW43_ITF_STA]);
+    err_t err = udp_bind(connection->mdns_pcb, IP_ADDR_ANY, 0);
+    if (err != ERR_OK) {
+        printf("rest: mdns udp_bind failed button=%lu err=%d\n",
+               (unsigned long)connection->button_index, (int)err);
+        rest_mdns_stop(connection);
+        return err;
+    }
+
+    udp_recv(connection->mdns_pcb, rest_mdns_recv, connection);
+    connection->mdns_deadline =
+        make_timeout_time_ms(REST_CLIENT_MDNS_TIMEOUT_MS);
+    connection->next_mdns_query =
+        make_timeout_time_ms(REST_CLIENT_MDNS_RETRY_MS);
+
+    printf("rest: mdns resolving button=%lu host=%s local_port=%u\n",
+           (unsigned long)connection->button_index, connection->url.host,
+           (unsigned int)connection->mdns_pcb->local_port);
+    err = rest_mdns_send_query(connection);
+    if (err != ERR_OK) {
+        rest_mdns_stop(connection);
+    }
+    return err;
+}
+
 static err_t rest_connected(void *arg, struct tcp_pcb *pcb, err_t err) {
     rest_connection_t *connection = (rest_connection_t *)arg;
 
@@ -517,6 +872,27 @@ void rest_client_poll(void) {
     cyw43_arch_lwip_begin();
     for (size_t i = 0; i < REST_CLIENT_MAX_CONNECTIONS; i++) {
         rest_connection_t *connection = &connections[i];
+        if (connection->in_use && connection->mdns_pcb != NULL) {
+            if (time_reached(connection->mdns_deadline)) {
+                printf("rest: mdns timeout button=%lu host=%s attempts=%u\n",
+                       (unsigned long)connection->button_index,
+                       connection->url.host,
+                       (unsigned int)connection->mdns_query_count);
+                rest_connection_free(connection);
+                continue;
+            }
+
+            if (time_reached(connection->next_mdns_query)) {
+                const err_t err = rest_mdns_send_query(connection);
+                connection->next_mdns_query =
+                    make_timeout_time_ms(REST_CLIENT_MDNS_RETRY_MS);
+                if (err != ERR_OK) {
+                    rest_connection_free(connection);
+                }
+            }
+            continue;
+        }
+
         if (!connection->in_use || connection->pcb == NULL) {
             continue;
         }
@@ -591,6 +967,12 @@ void rest_client_trigger(size_t button_index) {
     ip_addr_t addr;
     if (ipaddr_aton(connection->url.host, &addr)) {
         rest_connect_to_addr(connection, &addr);
+    } else if (rest_host_is_mdns(connection->url.host)) {
+        printf("rest: resolving button=%lu host=%s via mdns\n",
+               (unsigned long)button_index, connection->url.host);
+        if (rest_mdns_start(connection) != ERR_OK) {
+            rest_connection_free(connection);
+        }
     } else {
         printf("rest: resolving button=%lu host=%s\n",
                (unsigned long)button_index, connection->url.host);

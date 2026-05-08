@@ -20,6 +20,8 @@ Firmware for a Raspberry Pi Pico W macropad.
   GP6.
 - Each button action can be disabled or configured as an HTTP `GET` or `POST`
   request to an `http://` URL.
+- Button action URLs can target IPv4 addresses, normal DNS hostnames, or
+  `.local` mDNS hostnames.
 - `POST` actions can include a JSON request body.
 - The setup page can scan nearby Wi-Fi access points and save an SSID/password
   to flash.
