@@ -21,10 +21,14 @@ int main(void) {
            app_config_has_wifi_credentials(&boot_config) ? "true" : "false",
            boot_config.wifi_ssid, boot_config.mdns_hostname);
     for (size_t i = 0; i < APP_CONFIG_BUTTON_COUNT; i++) {
-        printf("boot: button%lu method=%s url='%s'\n", (unsigned long)i,
+        printf("boot: button%lu method=%s mode=%s urls=%u first_url='%s'\n",
+               (unsigned long)i,
                app_config_action_method_name(
                    boot_config.button_actions[i].method),
-               boot_config.button_actions[i].url);
+               app_config_action_trigger_mode_name(
+                   boot_config.button_actions[i].trigger_mode),
+               (unsigned int)boot_config.button_actions[i].url_count,
+               boot_config.button_actions[i].urls[0]);
     }
 
     if (cyw43_arch_init() != 0) {

@@ -50,7 +50,12 @@ typedef struct {
 typedef struct {
     bool in_use;
     size_t button_index;
-    app_config_button_action_t action;
+    size_t url_index;
+    app_config_action_method_t method;
+    char request_url[APP_CONFIG_ACTION_URL_MAX + 1u];
+    char body[APP_CONFIG_ACTION_BODY_MAX + 1u];
+    char content_type[APP_CONFIG_ACTION_CONTENT_TYPE_MAX + 1u];
+    char headers[APP_CONFIG_ACTION_HEADERS_MAX + 1u];
     parsed_url_t url;
     struct udp_pcb *mdns_pcb;
     struct tcp_pcb *pcb;
@@ -67,9 +72,18 @@ typedef struct {
     absolute_time_t next_connect_log;
 } rest_connection_t;
 
-static rest_connection_t connections[REST_CLIENT_MAX_CONNECTIONS];
+typedef struct {
+    bool active;
+    bool running;
+    size_t next_url_index;
+    size_t url_count;
+} rest_burst_sequence_t;
 
-static void rest_connect_to_addr(rest_connection_t *connection,
+static rest_connection_t connections[REST_CLIENT_MAX_CONNECTIONS];
+static rest_burst_sequence_t burst_sequences[APP_CONFIG_BUTTON_COUNT];
+static size_t round_robin_next_url[APP_CONFIG_BUTTON_COUNT];
+
+static bool rest_connect_to_addr(rest_connection_t *connection,
                                  const ip_addr_t *addr);
 
 static int rest_ascii_tolower(int ch) {
@@ -222,6 +236,20 @@ static void rest_mdns_stop(rest_connection_t *connection) {
 
 static void rest_connection_free(rest_connection_t *connection) {
     if (connection != NULL) {
+        if (connection->in_use &&
+            connection->button_index < APP_CONFIG_BUTTON_COUNT) {
+            rest_burst_sequence_t *sequence =
+                &burst_sequences[connection->button_index];
+            if (sequence->active && sequence->running) {
+                sequence->running = false;
+                if (sequence->next_url_index >= sequence->url_count) {
+                    sequence->active = false;
+                    printf("rest: burst complete button=%lu urls=%u\n",
+                           (unsigned long)connection->button_index,
+                           (unsigned int)sequence->url_count);
+                }
+            }
+        }
         rest_mdns_stop(connection);
         memset(connection, 0, sizeof(*connection));
     }
@@ -237,6 +265,17 @@ static rest_connection_t *rest_connection_alloc(void) {
     }
 
     return NULL;
+}
+
+static bool rest_button_connection_active(size_t button_index) {
+    for (size_t i = 0; i < REST_CLIENT_MAX_CONNECTIONS; i++) {
+        if (connections[i].in_use &&
+            connections[i].button_index == button_index) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 static bool parse_decimal_port(const char *value, size_t length,
@@ -465,10 +504,10 @@ static bool rest_request_append_headers(char *request, size_t request_size,
 }
 
 static bool rest_build_request(rest_connection_t *connection) {
-    const char *method = app_config_action_method_name(connection->action.method);
+    const char *method = app_config_action_method_name(connection->method);
     const char *body =
-        connection->action.method == APP_CONFIG_ACTION_POST
-            ? connection->action.body
+        connection->method == APP_CONFIG_ACTION_POST
+            ? connection->body
             : "";
     const size_t body_len = strlen(body);
     char host_header[REST_CLIENT_HOST_MAX + 8u];
@@ -494,20 +533,20 @@ static bool rest_build_request(rest_connection_t *connection) {
         goto request_too_large;
     }
 
-    if (connection->action.headers[0] != '\0' &&
+    if (connection->headers[0] != '\0' &&
         !rest_request_append_headers(connection->request,
                                      sizeof(connection->request), &length,
-                                     connection->action.headers)) {
+                                     connection->headers)) {
         goto request_too_large;
     }
 
-    if (connection->action.method == APP_CONFIG_ACTION_POST &&
+    if (connection->method == APP_CONFIG_ACTION_POST &&
         body_len > 0u) {
-        if (connection->action.content_type[0] != '\0' &&
+        if (connection->content_type[0] != '\0' &&
             !rest_request_append(connection->request,
                                  sizeof(connection->request), &length,
                                  "Content-Type: %s\r\n",
-                                 connection->action.content_type)) {
+                                 connection->content_type)) {
             goto request_too_large;
         }
 
@@ -534,18 +573,21 @@ static bool rest_build_request(rest_connection_t *connection) {
     }
 
     connection->request_len = length;
-    printf("rest: built request button=%lu method=%s host='%s' "
+    printf("rest: built request button=%lu url_index=%lu method=%s host='%s' "
            "content_type='%s' headers_len=%lu body_len=%lu bytes=%lu\n",
-           (unsigned long)connection->button_index, method, host_header,
-           connection->action.content_type,
-           (unsigned long)strlen(connection->action.headers),
+           (unsigned long)connection->button_index,
+           (unsigned long)connection->url_index, method, host_header,
+           connection->content_type,
+           (unsigned long)strlen(connection->headers),
            (unsigned long)body_len, (unsigned long)connection->request_len);
     return true;
 
 request_too_large:
-    printf("rest: request too large button=%lu method=%s url='%s'\n",
-           (unsigned long)connection->button_index, method,
-           connection->action.url);
+    printf("rest: request too large button=%lu url_index=%lu method=%s "
+           "url='%s'\n",
+           (unsigned long)connection->button_index,
+           (unsigned long)connection->url_index, method,
+           connection->request_url);
     return false;
 }
 
@@ -881,14 +923,17 @@ static err_t rest_connected(void *arg, struct tcp_pcb *pcb, err_t err) {
         return ERR_ABRT;
     }
 
-    printf("rest: request sent button=%lu method=%s url='%s' bytes=%lu\n",
+    printf("rest: request sent button=%lu url_index=%lu method=%s url='%s' "
+           "bytes=%lu\n",
            (unsigned long)connection->button_index,
-           app_config_action_method_name(connection->action.method),
-           connection->action.url, (unsigned long)connection->request_len);
+           (unsigned long)connection->url_index,
+           app_config_action_method_name(connection->method),
+           connection->request_url,
+           (unsigned long)connection->request_len);
     return ERR_OK;
 }
 
-static void rest_connect_to_addr(rest_connection_t *connection,
+static bool rest_connect_to_addr(rest_connection_t *connection,
                                  const ip_addr_t *addr) {
     char ip[16];
     ipaddr_ntoa_r(addr, ip, sizeof(ip));
@@ -914,7 +959,7 @@ static void rest_connect_to_addr(rest_connection_t *connection,
         printf("rest: tcp_new failed button=%lu\n",
                (unsigned long)connection->button_index);
         rest_connection_free(connection);
-        return;
+        return false;
     }
 
     tcp_bind_netif(connection->pcb, station_netif);
@@ -936,7 +981,7 @@ static void rest_connect_to_addr(rest_connection_t *connection,
                (unsigned long)connection->button_index, (int)err);
         tcp_abort(connection->pcb);
         rest_connection_free(connection);
-        return;
+        return false;
     }
 
     rest_log_pcb("after tcp_connect", connection->pcb);
@@ -944,6 +989,13 @@ static void rest_connect_to_addr(rest_connection_t *connection,
     printf("rest: tcp_output after connect button=%lu err=%d\n",
            (unsigned long)connection->button_index, (int)output_err);
     rest_log_pcb("after tcp_output", connection->pcb);
+    if (output_err != ERR_OK) {
+        tcp_abort(connection->pcb);
+        rest_connection_free(connection);
+        return false;
+    }
+
+    return true;
 }
 
 static void rest_dns_found(const char *name, const ip_addr_t *ipaddr,
@@ -959,8 +1011,130 @@ static void rest_dns_found(const char *name, const ip_addr_t *ipaddr,
     rest_connect_to_addr(connection, ipaddr);
 }
 
+static bool rest_start_request_locked(
+    size_t button_index, const app_config_button_action_t *action,
+    size_t url_index) {
+    if (url_index >= action->url_count ||
+        url_index >= APP_CONFIG_ACTION_URL_COUNT_MAX) {
+        printf("rest: invalid url index button=%lu url_index=%lu count=%u\n",
+               (unsigned long)button_index, (unsigned long)url_index,
+               (unsigned int)action->url_count);
+        return false;
+    }
+
+    if (rest_button_connection_active(button_index)) {
+        printf("rest: button=%lu busy, request ignored\n",
+               (unsigned long)button_index);
+        return false;
+    }
+
+    rest_connection_t *connection = rest_connection_alloc();
+    if (connection == NULL) {
+        printf("rest: no free connection slots for button=%lu\n",
+               (unsigned long)button_index);
+        return false;
+    }
+
+    connection->button_index = button_index;
+    connection->url_index = url_index;
+    connection->method = action->method;
+    memcpy(connection->request_url, action->urls[url_index],
+           sizeof(connection->request_url));
+    connection->request_url[APP_CONFIG_ACTION_URL_MAX] = '\0';
+    memcpy(connection->body, action->body, sizeof(connection->body));
+    connection->body[APP_CONFIG_ACTION_BODY_MAX] = '\0';
+    memcpy(connection->content_type, action->content_type,
+           sizeof(connection->content_type));
+    connection->content_type[APP_CONFIG_ACTION_CONTENT_TYPE_MAX] = '\0';
+    memcpy(connection->headers, action->headers, sizeof(connection->headers));
+    connection->headers[APP_CONFIG_ACTION_HEADERS_MAX] = '\0';
+
+    const char *url = connection->request_url;
+    if (!rest_parse_url(url, &connection->url)) {
+        rest_connection_free(connection);
+        return false;
+    }
+
+    printf("rest: trigger button=%lu mode=%s url_index=%lu/%u method=%s "
+           "url='%s'\n",
+           (unsigned long)button_index,
+           app_config_action_trigger_mode_name(action->trigger_mode),
+           (unsigned long)url_index + 1u, (unsigned int)action->url_count,
+           app_config_action_method_name(action->method), url);
+
+    ip_addr_t addr;
+    if (ipaddr_aton(connection->url.host, &addr)) {
+        return rest_connect_to_addr(connection, &addr);
+    }
+
+    if (rest_host_is_mdns(connection->url.host)) {
+        printf("rest: resolving button=%lu host=%s via mdns\n",
+               (unsigned long)button_index, connection->url.host);
+        if (rest_mdns_start(connection) != ERR_OK) {
+            rest_connection_free(connection);
+            return false;
+        }
+        return true;
+    }
+
+    printf("rest: resolving button=%lu host=%s\n",
+           (unsigned long)button_index, connection->url.host);
+    const err_t err =
+        dns_gethostbyname(connection->url.host, &addr, rest_dns_found,
+                          connection);
+    if (err == ERR_OK) {
+        return rest_connect_to_addr(connection, &addr);
+    }
+
+    if (err != ERR_INPROGRESS) {
+        printf("rest: dns start failed button=%lu err=%d\n",
+               (unsigned long)button_index, (int)err);
+        rest_connection_free(connection);
+        return false;
+    }
+
+    return true;
+}
+
+static void rest_burst_start_next_locked(size_t button_index) {
+    rest_burst_sequence_t *sequence = &burst_sequences[button_index];
+    if (!sequence->active || sequence->running) {
+        return;
+    }
+
+    const app_config_t config = app_config_get();
+    const app_config_button_action_t action =
+        config.button_actions[button_index];
+    if (action.method == APP_CONFIG_ACTION_DISABLED ||
+        action.url_count == 0u) {
+        sequence->active = false;
+        printf("rest: burst stopped button=%lu action disabled\n",
+               (unsigned long)button_index);
+        return;
+    }
+
+    const size_t url_count =
+        sequence->url_count < action.url_count ? sequence->url_count
+                                               : action.url_count;
+    while (sequence->next_url_index < url_count) {
+        const size_t url_index = sequence->next_url_index++;
+        sequence->running = true;
+        if (rest_start_request_locked(button_index, &action, url_index)) {
+            return;
+        }
+        sequence->running = false;
+    }
+
+    sequence->active = false;
+    printf("rest: burst complete button=%lu urls=%u\n",
+           (unsigned long)button_index,
+           (unsigned int)sequence->url_count);
+}
+
 void rest_client_init(void) {
     memset(connections, 0, sizeof(connections));
+    memset(burst_sequences, 0, sizeof(burst_sequences));
+    memset(round_robin_next_url, 0, sizeof(round_robin_next_url));
     printf("rest: client initialized slots=%u\n",
            (unsigned int)REST_CLIENT_MAX_CONNECTIONS);
 }
@@ -1023,6 +1197,10 @@ void rest_client_poll(void) {
         tcp_abort(connection->pcb);
         rest_connection_free(connection);
     }
+
+    for (size_t i = 0; i < APP_CONFIG_BUTTON_COUNT; i++) {
+        rest_burst_start_next_locked(i);
+    }
     cyw43_arch_lwip_end();
 }
 
@@ -1041,48 +1219,34 @@ void rest_client_trigger(size_t button_index) {
         return;
     }
 
-    rest_connection_t *connection = rest_connection_alloc();
-    if (connection == NULL) {
-        printf("rest: no free connection slots for button=%lu\n",
+    if (action.url_count == 0u) {
+        printf("rest: button=%lu has no URLs\n", (unsigned long)button_index);
+        return;
+    }
+
+    if (rest_button_connection_active(button_index) ||
+        burst_sequences[button_index].active) {
+        printf("rest: button=%lu already running\n",
                (unsigned long)button_index);
         return;
     }
 
-    connection->button_index = button_index;
-    connection->action = action;
-
-    if (!rest_parse_url(action.url, &connection->url)) {
-        rest_connection_free(connection);
-        return;
-    }
-
-    printf("rest: trigger button=%lu method=%s url='%s'\n",
-           (unsigned long)button_index,
-           app_config_action_method_name(action.method), action.url);
-
     cyw43_arch_lwip_begin();
-    ip_addr_t addr;
-    if (ipaddr_aton(connection->url.host, &addr)) {
-        rest_connect_to_addr(connection, &addr);
-    } else if (rest_host_is_mdns(connection->url.host)) {
-        printf("rest: resolving button=%lu host=%s via mdns\n",
-               (unsigned long)button_index, connection->url.host);
-        if (rest_mdns_start(connection) != ERR_OK) {
-            rest_connection_free(connection);
-        }
+    if (action.trigger_mode == APP_CONFIG_ACTION_TRIGGER_ROUND_ROBIN) {
+        const size_t url_index =
+            round_robin_next_url[button_index] % action.url_count;
+        round_robin_next_url[button_index] =
+            (url_index + 1u) % action.url_count;
+        rest_start_request_locked(button_index, &action, url_index);
     } else {
-        printf("rest: resolving button=%lu host=%s\n",
-               (unsigned long)button_index, connection->url.host);
-        const err_t err =
-            dns_gethostbyname(connection->url.host, &addr, rest_dns_found,
-                              connection);
-        if (err == ERR_OK) {
-            rest_connect_to_addr(connection, &addr);
-        } else if (err != ERR_INPROGRESS) {
-            printf("rest: dns start failed button=%lu err=%d\n",
-                   (unsigned long)button_index, (int)err);
-            rest_connection_free(connection);
-        }
+        rest_burst_sequence_t *sequence = &burst_sequences[button_index];
+        memset(sequence, 0, sizeof(*sequence));
+        sequence->active = true;
+        sequence->next_url_index = 0u;
+        sequence->url_count = action.url_count;
+        printf("rest: burst queued button=%lu urls=%u\n",
+               (unsigned long)button_index, (unsigned int)action.url_count);
+        rest_burst_start_next_locked(button_index);
     }
     cyw43_arch_lwip_end();
 }

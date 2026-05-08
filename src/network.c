@@ -22,8 +22,8 @@
 #define HTTP_PORT 80
 #define HTTP_BACKLOG 1
 #define HTTP_POLL_INTERVAL 10
-#define HTTP_REQUEST_MAX 24576
-#define HTTP_RESPONSE_MAX 14336
+#define HTTP_REQUEST_MAX 32768
+#define HTTP_RESPONSE_MAX 24576
 
 #define DHCP_SERVER_PORT 67
 #define DHCP_LEASE_SECONDS (24 * 60 * 60)
@@ -516,6 +516,22 @@ static bool parse_action_method(const char *value,
     return false;
 }
 
+static bool parse_action_trigger_mode(
+    const char *value, app_config_action_trigger_mode_t *trigger_mode) {
+    if (strcmp(value, "BURST") == 0 || strcmp(value, "burst") == 0) {
+        *trigger_mode = APP_CONFIG_ACTION_TRIGGER_BURST;
+        return true;
+    }
+
+    if (strcmp(value, "ROUND_ROBIN") == 0 ||
+        strcmp(value, "round_robin") == 0 || strcmp(value, "round-robin") == 0) {
+        *trigger_mode = APP_CONFIG_ACTION_TRIGGER_ROUND_ROBIN;
+        return true;
+    }
+
+    return false;
+}
+
 static bool http_parse_action_config(const char *request,
                                      app_config_t *config) {
     const char *body = http_request_body(request);
@@ -524,15 +540,20 @@ static bool http_parse_action_config(const char *request,
 
     for (size_t i = 0; i < APP_CONFIG_BUTTON_COUNT; i++) {
         char method_name[16];
-        char url_name[16];
+        char mode_name[16];
+        char legacy_url_name[16];
         char body_name[16];
         char content_type_name[24];
         char headers_name[20];
         char method_value[16];
+        char mode_value[16];
 
         snprintf(method_name, sizeof(method_name), "b%lu_method",
                  (unsigned long)i);
-        snprintf(url_name, sizeof(url_name), "b%lu_url", (unsigned long)i);
+        snprintf(mode_name, sizeof(mode_name), "b%lu_mode",
+                 (unsigned long)i);
+        snprintf(legacy_url_name, sizeof(legacy_url_name), "b%lu_url",
+                 (unsigned long)i);
         snprintf(body_name, sizeof(body_name), "b%lu_body", (unsigned long)i);
         snprintf(content_type_name, sizeof(content_type_name),
                  "b%lu_content_type", (unsigned long)i);
@@ -555,10 +576,58 @@ static bool http_parse_action_config(const char *request,
             return false;
         }
 
-        if (!http_optional_param_value(body, query, url_name,
-                                       candidate.button_actions[i].url,
-                                       sizeof(candidate.button_actions[i].url)) ||
-            !http_optional_param_value(body, query, body_name,
+        if (http_param_value(body, mode_name, mode_value,
+                             sizeof(mode_value)) ||
+            http_param_value(query, mode_name, mode_value,
+                             sizeof(mode_value))) {
+            if (!parse_action_trigger_mode(
+                    mode_value, &candidate.button_actions[i].trigger_mode)) {
+                printf("http: invalid action mode='%s' button=%lu\n",
+                       mode_value, (unsigned long)i);
+                return false;
+            }
+        }
+
+        memset(candidate.button_actions[i].urls, 0,
+               sizeof(candidate.button_actions[i].urls));
+        candidate.button_actions[i].url_count = 0u;
+
+        for (size_t j = 0; j < APP_CONFIG_ACTION_URL_COUNT_MAX; j++) {
+            char url_name[20];
+            char url_value[APP_CONFIG_ACTION_URL_MAX + 1u];
+            snprintf(url_name, sizeof(url_name), "b%lu_url%lu",
+                     (unsigned long)i, (unsigned long)j);
+            if ((!http_param_value(body, url_name, url_value,
+                                   sizeof(url_value)) &&
+                 !http_param_value(query, url_name, url_value,
+                                   sizeof(url_value))) ||
+                url_value[0] == '\0') {
+                continue;
+            }
+
+            const size_t target = candidate.button_actions[i].url_count;
+            if (target >= APP_CONFIG_ACTION_URL_COUNT_MAX) {
+                return false;
+            }
+            memcpy(candidate.button_actions[i].urls[target], url_value,
+                   strlen(url_value));
+            candidate.button_actions[i].url_count++;
+        }
+
+        if (candidate.button_actions[i].url_count == 0u) {
+            char url_value[APP_CONFIG_ACTION_URL_MAX + 1u];
+            if ((http_param_value(body, legacy_url_name, url_value,
+                                  sizeof(url_value)) ||
+                 http_param_value(query, legacy_url_name, url_value,
+                                  sizeof(url_value))) &&
+                url_value[0] != '\0') {
+                memcpy(candidate.button_actions[i].urls[0], url_value,
+                       strlen(url_value));
+                candidate.button_actions[i].url_count = 1u;
+            }
+        }
+
+        if (!http_optional_param_value(body, query, body_name,
                                        candidate.button_actions[i].body,
                                        sizeof(candidate.button_actions[i].body)) ||
             !http_optional_param_value(
@@ -705,8 +774,23 @@ static size_t http_build_config_response(char *response, size_t response_size,
                     "{\"pin\":%u,\"method\":", pin);
         json_append_string(response, response_size, &length,
                            app_config_action_method_name(action->method));
+        http_append(response, response_size, &length, ",\"mode\":");
+        json_append_string(response, response_size, &length,
+                           app_config_action_trigger_mode_name(
+                               action->trigger_mode));
+        http_append(response, response_size, &length, ",\"url_count\":%u",
+                    (unsigned int)action->url_count);
         http_append(response, response_size, &length, ",\"url\":");
-        json_append_string(response, response_size, &length, action->url);
+        json_append_string(response, response_size, &length, action->urls[0]);
+        http_append(response, response_size, &length, ",\"urls\":[");
+        for (size_t j = 0; j < action->url_count; j++) {
+            if (j > 0) {
+                http_append(response, response_size, &length, ",");
+            }
+            json_append_string(response, response_size, &length,
+                               action->urls[j]);
+        }
+        http_append(response, response_size, &length, "]");
         http_append(response, response_size, &length, ",\"body\":");
         json_append_string(response, response_size, &length, action->body);
         http_append(response, response_size, &length,
@@ -969,11 +1053,15 @@ static size_t http_build_response(const char *request, char *response,
         }
 
         for (size_t i = 0; i < APP_CONFIG_BUTTON_COUNT; i++) {
-            printf("http: action saved button=%lu method=%s url='%s'\n",
+            printf("http: action saved button=%lu method=%s mode=%s urls=%u "
+                   "first_url='%s'\n",
                    (unsigned long)i,
                    app_config_action_method_name(
                        config.button_actions[i].method),
-                   config.button_actions[i].url);
+                   app_config_action_trigger_mode_name(
+                       config.button_actions[i].trigger_mode),
+                   (unsigned int)config.button_actions[i].url_count,
+                   config.button_actions[i].urls[0]);
         }
         return http_build_config_response(response, response_size, &config);
     }
