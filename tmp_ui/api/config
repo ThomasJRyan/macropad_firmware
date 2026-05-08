@@ -1,0 +1,1 @@
+{"wifi_configured":true,"wifi_ssid":"Example Network","buttons":[{"pin":5,"method":"POST","url":"http://homeassistant.local:8123/api/webhook/macropad_toggle_heater","body":"","content_type":"application/json","headers":""},{"pin":6,"method":"GET","url":"http://192.168.0.175","body":"","content_type":"application/json","headers":"Authorization: Bearer token"}]}

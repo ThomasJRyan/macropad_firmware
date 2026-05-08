@@ -1,0 +1,84 @@
+<!doctype html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Macropad</title>
+<style>
+body{font-family:sans-serif;margin:0;background:#f7f7f4;color:#1f2933}
+main{max-width:760px;margin:0 auto;padding:24px}
+section{margin:18px 0;padding:16px;background:#fff;border:1px solid #ddd}
+label{display:block;margin:10px 0 4px;font-weight:600}
+input,select,textarea,button{font:inherit;width:100%;box-sizing:border-box}
+input,select,textarea{padding:10px;border:1px solid #b8c0cc}
+textarea{min-height:90px}
+button{margin-top:12px;padding:10px;background:#1f6feb;color:white;border:0}
+#status{min-height:1.4em;font-weight:600}
+</style>
+</head>
+<body>
+<main>
+<h1>Button Actions</h1>
+<form id="actions">
+<section>
+<h2>GP5</h2>
+<label>Method</label>
+<select name="b0_method">
+<option value="DISABLED">Disabled</option>
+<option value="GET">GET</option>
+<option value="POST">POST</option>
+</select>
+<label>URL</label>
+<input name="b0_url" maxlength="128" placeholder="http://192.168.0.10/action">
+<label>POST body</label>
+<textarea name="b0_body" maxlength="512"></textarea>
+<label>Content-Type</label>
+<input name="b0_content_type" maxlength="64" placeholder="application/json">
+<label>Headers</label>
+<textarea name="b0_headers" maxlength="384" placeholder="Authorization: Bearer token"></textarea>
+</section>
+<section>
+<h2>GP6</h2>
+<label>Method</label>
+<select name="b1_method">
+<option value="DISABLED">Disabled</option>
+<option value="GET">GET</option>
+<option value="POST">POST</option>
+</select>
+<label>URL</label>
+<input name="b1_url" maxlength="128" placeholder="http://192.168.0.10/action">
+<label>POST body</label>
+<textarea name="b1_body" maxlength="512"></textarea>
+<label>Content-Type</label>
+<input name="b1_content_type" maxlength="64" placeholder="application/json">
+<label>Headers</label>
+<textarea name="b1_headers" maxlength="384" placeholder="Authorization: Bearer token"></textarea>
+</section>
+<button type="submit">Save Buttons</button>
+</form>
+<p id="status"></p>
+</main>
+<script>
+const s=document.getElementById('status');
+function status(t){s.textContent=t;}
+function setAction(i,a){
+document.querySelector('[name=b'+i+'_method]').value=a.method;
+document.querySelector('[name=b'+i+'_url]').value=a.url||'';
+document.querySelector('[name=b'+i+'_body]').value=a.body||'';
+document.querySelector('[name=b'+i+'_content_type]').value=a.content_type||'';
+document.querySelector('[name=b'+i+'_headers]').value=a.headers||'';
+}
+async function loadConfig(){
+const r=await fetch('/api/config');
+const c=await r.json();
+c.buttons.forEach((a,i)=>setAction(i,a));
+}
+document.getElementById('actions').addEventListener('submit',async function(e){
+e.preventDefault();
+const r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams(new FormData(this))});
+status(r.ok?'Buttons saved':'Button save failed');
+if(r.ok)loadConfig();
+});
+loadConfig();
+</script>
+</body>
+</html>

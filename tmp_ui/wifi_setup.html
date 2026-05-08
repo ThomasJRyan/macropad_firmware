@@ -1,0 +1,61 @@
+<!doctype html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Macropad Wi-Fi Setup</title>
+<style>
+body{font-family:sans-serif;margin:0;background:#f7f7f4;color:#1f2933}
+main{max-width:640px;margin:0 auto;padding:24px}
+section{margin:18px 0;padding:16px;background:#fff;border:1px solid #ddd}
+label{display:block;margin:10px 0 4px;font-weight:600}
+input,select,button{font:inherit;width:100%;box-sizing:border-box}
+input,select{padding:10px;border:1px solid #b8c0cc}
+button{margin-top:12px;padding:10px;background:#1f6feb;color:white;border:0}
+#status{min-height:1.4em;font-weight:600}
+</style>
+</head>
+<body>
+<main>
+<h1>Wi-Fi Setup</h1>
+<section>
+<button type="button" id="scan">Scan</button>
+<form id="wifi">
+<label>Network</label>
+<select id="networks" name="ssid"></select>
+<label>Password</label>
+<input name="password" type="password" maxlength="63">
+<button type="submit">Save Wi-Fi</button>
+</form>
+</section>
+<p id="status"></p>
+</main>
+<script>
+const s=document.getElementById('status');
+const n=document.getElementById('networks');
+function status(t){s.textContent=t;}
+async function refreshScan(){
+const r=await fetch('/api/wifi/scan');
+const j=await r.json();
+n.innerHTML='';
+j.networks.forEach(function(ap){
+const o=document.createElement('option');
+o.value=ap.ssid;
+o.textContent=ap.ssid+' ('+ap.rssi+' dBm)';
+n.appendChild(o);
+});
+if(j.scanning){status('Scanning...');setTimeout(refreshScan,1000);}
+else{status(j.networks.length?'Scan complete':'No networks found');}
+}
+document.getElementById('scan').addEventListener('click',async function(){
+status('Scanning...');
+await fetch('/api/wifi/scan',{method:'POST'});
+refreshScan();
+});
+document.getElementById('wifi').addEventListener('submit',async function(e){
+e.preventDefault();
+const r=await fetch('/api/wifi',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams(new FormData(this))});
+status(r.ok?'Wi-Fi saved':'Wi-Fi save failed');
+});
+</script>
+</body>
+</html>
