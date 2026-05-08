@@ -31,6 +31,8 @@
 
 #define WIFI_SCAN_MAX_RESULTS 16
 #define WIFI_CONNECT_TIMEOUT_MS 15000
+#define WIFI_CONNECT_ATTEMPTS 3
+#define WIFI_CONNECT_RETRY_DELAY_MS 1000
 #define NETWORK_PERIODIC_DEBUG 0
 
 typedef struct {
@@ -1370,12 +1372,35 @@ static err_t network_start_station(const app_config_t *config) {
 
     const char *password =
         config->wifi_password[0] == '\0' ? NULL : config->wifi_password;
-    const int connect_err = cyw43_arch_wifi_connect_timeout_ms(
-        config->wifi_ssid, password, CYW43_AUTH_WPA2_MIXED_PSK,
-        WIFI_CONNECT_TIMEOUT_MS);
-    printf("network: wifi_connect_timeout result=%d\n", connect_err);
+
+    int connect_err = PICO_ERROR_CONNECT_FAILED;
+    for (uint attempt = 1u; attempt <= WIFI_CONNECT_ATTEMPTS; attempt++) {
+        printf("network: wifi connect attempt %u/%u ssid='%s'\n",
+               (unsigned int)attempt, (unsigned int)WIFI_CONNECT_ATTEMPTS,
+               config->wifi_ssid);
+        connect_err = cyw43_arch_wifi_connect_timeout_ms(
+            config->wifi_ssid, password, CYW43_AUTH_WPA2_MIXED_PSK,
+            WIFI_CONNECT_TIMEOUT_MS);
+        printf("network: wifi_connect_timeout attempt=%u result=%d\n",
+               (unsigned int)attempt, connect_err);
+
+        if (connect_err == PICO_OK) {
+            break;
+        }
+
+        if (attempt < WIFI_CONNECT_ATTEMPTS) {
+            printf("network: wifi connect attempt %u failed, retrying in "
+                   "%u ms\n",
+                   (unsigned int)attempt,
+                   (unsigned int)WIFI_CONNECT_RETRY_DELAY_MS);
+            cyw43_wifi_leave(&cyw43_state, CYW43_ITF_STA);
+            sleep_ms(WIFI_CONNECT_RETRY_DELAY_MS);
+        }
+    }
+
     if (connect_err != PICO_OK) {
-        printf("network: station connect failed err=%d\n", connect_err);
+        printf("network: station connect failed after %u attempts err=%d\n",
+               (unsigned int)WIFI_CONNECT_ATTEMPTS, connect_err);
         cyw43_arch_disable_sta_mode();
         return ERR_CONN;
     }
