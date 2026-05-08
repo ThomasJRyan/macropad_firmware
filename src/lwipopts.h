@@ -4,7 +4,7 @@
 #define NO_SYS 1
 
 #define MEM_ALIGNMENT 4
-#define MEM_SIZE (16 * 1024)
+#define MEM_SIZE (32 * 1024)
 
 #define LWIP_IPV4 1
 #define LWIP_IPV6 0
@@ -27,14 +27,14 @@
 
 #define MEMP_NUM_TCP_PCB 8
 #define MEMP_NUM_TCP_PCB_LISTEN 4
-#define MEMP_NUM_TCP_SEG 16
+#define MEMP_NUM_TCP_SEG 40
 #define MEMP_NUM_UDP_PCB 8
 #define MEMP_NUM_SYS_TIMEOUT 24
 #define PBUF_POOL_SIZE 32
 
 #define TCP_MSS (1500 - 20 - 20)
-#define TCP_SND_BUF (4 * TCP_MSS)
-#define TCP_WND (4 * TCP_MSS)
+#define TCP_SND_BUF (10 * TCP_MSS)
+#define TCP_WND (6 * TCP_MSS)
 
 #define LWIP_IP_ACCEPT_UDP_PORT(port) ((port) == PP_NTOHS(67))
 

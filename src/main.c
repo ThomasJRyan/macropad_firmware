@@ -7,9 +7,6 @@
 
 #include <stdio.h>
 
-#define BUTTON_0_PIN 5
-#define BUTTON_1_PIN 6
-
 #define BUTTON_POLL_INTERVAL_MS 5
 
 int main(void) {
@@ -46,25 +43,24 @@ int main(void) {
 
     rest_client_init();
 
-    button_t button_0;
-    button_t button_1;
+    button_t buttons[APP_CONFIG_BUTTON_COUNT];
 
-    button_init(&button_0, BUTTON_0_PIN);
-    button_init(&button_1, BUTTON_1_PIN);
-    printf("boot: buttons initialized button0=GP%u button1=GP%u\n",
-           BUTTON_0_PIN, BUTTON_1_PIN);
+    for (size_t i = 0; i < APP_CONFIG_BUTTON_COUNT; i++) {
+        const uint8_t pin = app_config_button_pin(i);
+        button_init(&buttons[i], pin);
+        printf("boot: button%lu initialized GP%u\n", (unsigned long)i,
+               (unsigned int)pin);
+    }
 
     printf("boot: entering main loop\n");
 
     while (true) {
-        if (button_update(&button_0)) {
-            printf("main: button0 GP%u pressed\n", BUTTON_0_PIN);
-            rest_client_trigger(0);
-        }
-
-        if (button_update(&button_1)) {
-            printf("main: button1 GP%u pressed\n", BUTTON_1_PIN);
-            rest_client_trigger(1);
+        for (size_t i = 0; i < APP_CONFIG_BUTTON_COUNT; i++) {
+            if (button_update(&buttons[i])) {
+                printf("main: button%lu GP%u pressed\n", (unsigned long)i,
+                       (unsigned int)app_config_button_pin(i));
+                rest_client_trigger(i);
+            }
         }
 
         rest_client_poll();

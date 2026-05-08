@@ -15,6 +15,15 @@ Then open:
 
 The `api/` files are static mock responses for visual iteration.
 
+Regenerate the firmware-embedded readable UI:
+
+```sh
+node tmp_ui/embed.mjs
+```
+
+This updates `src/ui_assets.h` from `tmp_ui/index.html`,
+`tmp_ui/wifi_setup.html`, and `tmp_ui/styles.css`.
+
 Generate compact firmware assets:
 
 ```sh

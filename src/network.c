@@ -16,12 +16,13 @@
 #include "pico/critical_section.h"
 #include "pico/cyw43_arch.h"
 #include "pico/stdlib.h"
+#include "ui_assets.h"
 
 #define HTTP_PORT 80
-#define HTTP_BACKLOG 4
+#define HTTP_BACKLOG 1
 #define HTTP_POLL_INTERVAL 10
-#define HTTP_REQUEST_MAX 6144
-#define HTTP_RESPONSE_MAX 8192
+#define HTTP_REQUEST_MAX 14336
+#define HTTP_RESPONSE_MAX 14336
 
 #define DHCP_SERVER_PORT 67
 #define DHCP_LEASE_SECONDS (24 * 60 * 60)
@@ -30,9 +31,6 @@
 #define WIFI_SCAN_MAX_RESULTS 16
 #define WIFI_CONNECT_TIMEOUT_MS 15000
 #define NETWORK_PERIODIC_DEBUG 0
-
-#define BUTTON_0_PIN 5u
-#define BUTTON_1_PIN 6u
 
 typedef struct {
     bool in_use;
@@ -47,177 +45,6 @@ typedef struct {
     uint16_t channel;
     int16_t rssi;
 } wifi_scan_result_t;
-
-static const char button_config_response[] =
-    "HTTP/1.0 200 OK\r\n"
-    "Content-Type: text/html; charset=utf-8\r\n"
-    "Connection: close\r\n"
-    "\r\n"
-    "<!doctype html>"
-    "<html>"
-    "<head>"
-    "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
-    "<title>Macropad</title>"
-    "<style>"
-    "body{font-family:sans-serif;margin:0;background:#f7f7f4;color:#1f2933}"
-    "main{max-width:760px;margin:0 auto;padding:24px}"
-    "section{margin:18px 0;padding:16px;background:#fff;border:1px solid #ddd}"
-    "label{display:block;margin:10px 0 4px;font-weight:600}"
-    "input,select,textarea,button{font:inherit;width:100%;box-sizing:border-box}"
-    "input,select,textarea{padding:10px;border:1px solid #b8c0cc}"
-    "textarea{min-height:90px}"
-    "button{margin-top:12px;padding:10px;background:#1f6feb;color:white;border:0}"
-    "#status{min-height:1.4em;font-weight:600}"
-    "</style>"
-    "</head>"
-    "<body>"
-    "<main>"
-    "<h1>Button Actions</h1>"
-    "<form id=\"actions\">"
-    "<section>"
-    "<h2>GP5</h2>"
-    "<label>Method</label>"
-    "<select name=\"b0_method\">"
-    "<option value=\"DISABLED\">Disabled</option>"
-    "<option value=\"GET\">GET</option>"
-    "<option value=\"POST\">POST</option>"
-    "</select>"
-    "<label>URL</label>"
-    "<input name=\"b0_url\" maxlength=\"128\" "
-    "placeholder=\"http://192.168.0.10/action\">"
-    "<label>POST body</label>"
-    "<textarea name=\"b0_body\" maxlength=\"512\"></textarea>"
-    "<label>Content-Type</label>"
-    "<input name=\"b0_content_type\" maxlength=\"64\" "
-    "placeholder=\"application/json\">"
-    "<label>Headers</label>"
-    "<textarea name=\"b0_headers\" maxlength=\"384\" "
-    "placeholder=\"Authorization: Bearer token\"></textarea>"
-    "</section>"
-    "<section>"
-    "<h2>GP6</h2>"
-    "<label>Method</label>"
-    "<select name=\"b1_method\">"
-    "<option value=\"DISABLED\">Disabled</option>"
-    "<option value=\"GET\">GET</option>"
-    "<option value=\"POST\">POST</option>"
-    "</select>"
-    "<label>URL</label>"
-    "<input name=\"b1_url\" maxlength=\"128\" "
-    "placeholder=\"http://192.168.0.10/action\">"
-    "<label>POST body</label>"
-    "<textarea name=\"b1_body\" maxlength=\"512\"></textarea>"
-    "<label>Content-Type</label>"
-    "<input name=\"b1_content_type\" maxlength=\"64\" "
-    "placeholder=\"application/json\">"
-    "<label>Headers</label>"
-    "<textarea name=\"b1_headers\" maxlength=\"384\" "
-    "placeholder=\"Authorization: Bearer token\"></textarea>"
-    "</section>"
-    "<button type=\"submit\">Save Buttons</button>"
-    "</form>"
-    "<p id=\"status\"></p>"
-    "</main>"
-    "<script>"
-    "const s=document.getElementById('status');"
-    "function status(t){s.textContent=t;}"
-    "function setAction(i,a){"
-    "document.querySelector('[name=b'+i+'_method]').value=a.method;"
-    "document.querySelector('[name=b'+i+'_url]').value=a.url||'';"
-    "document.querySelector('[name=b'+i+'_body]').value=a.body||'';"
-    "document.querySelector('[name=b'+i+'_content_type]').value="
-    "a.content_type||'';"
-    "document.querySelector('[name=b'+i+'_headers]').value=a.headers||'';"
-    "}"
-    "async function loadConfig(){"
-    "const r=await fetch('/api/config');"
-    "const c=await r.json();"
-    "c.buttons.forEach((a,i)=>setAction(i,a));"
-    "}"
-    "document.getElementById('actions').addEventListener('submit',async "
-    "function(e){"
-    "e.preventDefault();"
-    "const r=await fetch('/api/config',{method:'POST',headers:{"
-    "'Content-Type':'application/x-www-form-urlencoded'},"
-    "body:new URLSearchParams(new FormData(this))});"
-    "status(r.ok?'Buttons saved':'Button save failed');"
-    "if(r.ok)loadConfig();"
-    "});"
-    "loadConfig();"
-    "</script>"
-    "</body>"
-    "</html>";
-
-static const char wifi_setup_response[] =
-    "HTTP/1.0 200 OK\r\n"
-    "Content-Type: text/html; charset=utf-8\r\n"
-    "Connection: close\r\n"
-    "\r\n"
-    "<!doctype html>"
-    "<html>"
-    "<head>"
-    "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
-    "<title>Macropad Wi-Fi Setup</title>"
-    "<style>"
-    "body{font-family:sans-serif;margin:0;background:#f7f7f4;color:#1f2933}"
-    "main{max-width:640px;margin:0 auto;padding:24px}"
-    "section{margin:18px 0;padding:16px;background:#fff;border:1px solid #ddd}"
-    "label{display:block;margin:10px 0 4px;font-weight:600}"
-    "input,select,button{font:inherit;width:100%;box-sizing:border-box}"
-    "input,select{padding:10px;border:1px solid #b8c0cc}"
-    "button{margin-top:12px;padding:10px;background:#1f6feb;color:white;border:0}"
-    "#status{min-height:1.4em;font-weight:600}"
-    "</style>"
-    "</head>"
-    "<body>"
-    "<main>"
-    "<h1>Wi-Fi Setup</h1>"
-    "<section>"
-    "<button type=\"button\" id=\"scan\">Scan</button>"
-    "<form id=\"wifi\">"
-    "<label>Network</label>"
-    "<select id=\"networks\" name=\"ssid\"></select>"
-    "<label>Password</label>"
-    "<input name=\"password\" type=\"password\" maxlength=\"63\">"
-    "<button type=\"submit\">Save Wi-Fi</button>"
-    "</form>"
-    "</section>"
-    "<p id=\"status\"></p>"
-    "</main>"
-    "<script>"
-    "const s=document.getElementById('status');"
-    "const n=document.getElementById('networks');"
-    "function status(t){s.textContent=t;}"
-    "async function refreshScan(){"
-    "const r=await fetch('/api/wifi/scan');"
-    "const j=await r.json();"
-    "n.innerHTML='';"
-    "j.networks.forEach(function(ap){"
-    "const o=document.createElement('option');"
-    "o.value=ap.ssid;"
-    "o.textContent=ap.ssid+' ('+ap.rssi+' dBm)';"
-    "n.appendChild(o);"
-    "});"
-    "if(j.scanning){status('Scanning...');setTimeout(refreshScan,1000);}"
-    "else{status(j.networks.length?'Scan complete':'No networks found');}"
-    "}"
-    "document.getElementById('scan').addEventListener('click',async "
-    "function(){"
-    "status('Scanning...');"
-    "await fetch('/api/wifi/scan',{method:'POST'});"
-    "refreshScan();"
-    "});"
-    "document.getElementById('wifi').addEventListener('submit',async "
-    "function(e){"
-    "e.preventDefault();"
-    "const r=await fetch('/api/wifi',{method:'POST',headers:{"
-    "'Content-Type':'application/x-www-form-urlencoded'},"
-    "body:new URLSearchParams(new FormData(this))});"
-    "status(r.ok?'Wi-Fi saved':'Wi-Fi save failed');"
-    "});"
-    "</script>"
-    "</body>"
-    "</html>";
 
 static const char wifi_saved_response[] =
     "HTTP/1.0 200 OK\r\n"
@@ -380,6 +207,9 @@ static bool json_append_string(char *response, size_t response_size,
 
     return http_append(response, response_size, length, "\"");
 }
+
+static size_t http_copy_response(char *response, size_t response_size,
+                                 const char *source);
 
 static http_connection_t *http_connection_alloc(void) {
     for (size_t i = 0; i < HTTP_BACKLOG; i++) {
@@ -777,7 +607,7 @@ static size_t http_build_config_response(char *response, size_t response_size,
     for (size_t i = 0; i < APP_CONFIG_BUTTON_COUNT; i++) {
         const app_config_button_action_t *action =
             &config->button_actions[i];
-        const unsigned int pin = i == 0 ? BUTTON_0_PIN : BUTTON_1_PIN;
+        const unsigned int pin = app_config_button_pin(i);
 
         if (i > 0) {
             http_append(response, response_size, &length, ",");
@@ -804,11 +634,56 @@ static size_t http_build_config_response(char *response, size_t response_size,
     return length;
 }
 
+static size_t http_build_asset_response(char *response, size_t response_size,
+                                        const char *content_type,
+                                        const char *body, size_t body_len) {
+    size_t length = http_format(response, response_size,
+                                "HTTP/1.0 200 OK\r\n"
+                                "Content-Type: %s\r\n"
+                                "Content-Length: %lu\r\n"
+                                "Connection: close\r\n"
+                                "\r\n",
+                                content_type, (unsigned long)body_len);
+
+    if (length + body_len >= response_size) {
+        printf("http: asset response too large len=%lu response_size=%lu\n",
+               (unsigned long)body_len, (unsigned long)response_size);
+        return http_copy_response(response, response_size,
+                                  server_error_response);
+    }
+
+    memcpy(response + length, body, body_len);
+    length += body_len;
+    response[length] = '\0';
+    return length;
+}
+
 static size_t http_build_index_response(char *response, size_t response_size) {
-    const char *page = current_mode == NETWORK_MODE_SETUP_AP
-                           ? wifi_setup_response
-                           : button_config_response;
-    return http_format(response, response_size, "%s", page);
+    if (current_mode == NETWORK_MODE_SETUP_AP) {
+        return http_build_asset_response(response, response_size,
+                                         "text/html; charset=utf-8",
+                                         UI_WIFI_SETUP_HTML,
+                                         UI_WIFI_SETUP_HTML_LEN);
+    }
+
+    return http_build_asset_response(response, response_size,
+                                     "text/html; charset=utf-8",
+                                     UI_INDEX_HTML, UI_INDEX_HTML_LEN);
+}
+
+static size_t http_build_wifi_setup_response(char *response,
+                                             size_t response_size) {
+    return http_build_asset_response(response, response_size,
+                                     "text/html; charset=utf-8",
+                                     UI_WIFI_SETUP_HTML,
+                                     UI_WIFI_SETUP_HTML_LEN);
+}
+
+static size_t http_build_styles_response(char *response,
+                                         size_t response_size) {
+    return http_build_asset_response(response, response_size,
+                                     "text/css; charset=utf-8",
+                                     UI_STYLES_CSS, UI_STYLES_CSS_LEN);
 }
 
 static void wifi_scan_state_init(void) {
@@ -957,6 +832,21 @@ static size_t http_build_response(const char *request, char *response,
         return http_build_index_response(response, response_size);
     }
 
+    if (http_request_matches(request, "GET", "/index.html")) {
+        printf("http: route GET /index.html\n");
+        return http_build_index_response(response, response_size);
+    }
+
+    if (http_request_matches(request, "GET", "/wifi_setup.html")) {
+        printf("http: route GET /wifi_setup.html\n");
+        return http_build_wifi_setup_response(response, response_size);
+    }
+
+    if (http_request_matches(request, "GET", "/styles.css")) {
+        printf("http: route GET /styles.css\n");
+        return http_build_styles_response(response, response_size);
+    }
+
     if (http_request_matches(request, "GET", "/api/config")) {
         printf("http: route GET /api/config\n");
         const app_config_t config = app_config_get();
@@ -1025,7 +915,10 @@ static size_t http_build_response(const char *request, char *response,
 
     if (http_path_matches(request, "/api/config") ||
         http_path_matches(request, "/api/wifi") ||
-        http_path_matches(request, "/api/wifi/scan")) {
+        http_path_matches(request, "/api/wifi/scan") ||
+        http_path_matches(request, "/styles.css") ||
+        http_path_matches(request, "/index.html") ||
+        http_path_matches(request, "/wifi_setup.html")) {
         printf("http: method not allowed\n");
         return http_copy_response(response, response_size,
                                   method_not_allowed_response);

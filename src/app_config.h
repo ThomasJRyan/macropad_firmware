@@ -2,11 +2,12 @@
 #define MACROPAD_APP_CONFIG_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #define APP_CONFIG_WIFI_SSID_MAX 32u
 #define APP_CONFIG_WIFI_PASSWORD_MAX 63u
-#define APP_CONFIG_BUTTON_COUNT 2u
+#define APP_CONFIG_BUTTON_COUNT 6u
 #define APP_CONFIG_ACTION_URL_MAX 128u
 #define APP_CONFIG_ACTION_BODY_MAX 512u
 #define APP_CONFIG_ACTION_CONTENT_TYPE_MAX 64u
@@ -38,5 +39,6 @@ bool app_config_save(const app_config_t *config);
 bool app_config_validate(const app_config_t *config);
 bool app_config_has_wifi_credentials(const app_config_t *config);
 const char *app_config_action_method_name(app_config_action_method_t method);
+uint8_t app_config_button_pin(size_t button_index);
 
 #endif
