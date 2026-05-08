@@ -9,6 +9,8 @@
 #define APP_CONFIG_BUTTON_COUNT 2u
 #define APP_CONFIG_ACTION_URL_MAX 128u
 #define APP_CONFIG_ACTION_BODY_MAX 512u
+#define APP_CONFIG_ACTION_CONTENT_TYPE_MAX 64u
+#define APP_CONFIG_ACTION_HEADERS_MAX 384u
 
 typedef enum {
     APP_CONFIG_ACTION_DISABLED = 0,
@@ -20,6 +22,8 @@ typedef struct {
     app_config_action_method_t method;
     char url[APP_CONFIG_ACTION_URL_MAX + 1u];
     char body[APP_CONFIG_ACTION_BODY_MAX + 1u];
+    char content_type[APP_CONFIG_ACTION_CONTENT_TYPE_MAX + 1u];
+    char headers[APP_CONFIG_ACTION_HEADERS_MAX + 1u];
 } app_config_button_action_t;
 
 typedef struct {

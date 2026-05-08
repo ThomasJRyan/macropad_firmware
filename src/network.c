@@ -20,7 +20,7 @@
 #define HTTP_PORT 80
 #define HTTP_BACKLOG 4
 #define HTTP_POLL_INTERVAL 10
-#define HTTP_REQUEST_MAX 4096
+#define HTTP_REQUEST_MAX 6144
 #define HTTP_RESPONSE_MAX 8192
 
 #define DHCP_SERVER_PORT 67
@@ -87,6 +87,12 @@ static const char button_config_response[] =
     "placeholder=\"http://192.168.0.10/action\">"
     "<label>POST body</label>"
     "<textarea name=\"b0_body\" maxlength=\"512\"></textarea>"
+    "<label>Content-Type</label>"
+    "<input name=\"b0_content_type\" maxlength=\"64\" "
+    "placeholder=\"application/json\">"
+    "<label>Headers</label>"
+    "<textarea name=\"b0_headers\" maxlength=\"384\" "
+    "placeholder=\"Authorization: Bearer token\"></textarea>"
     "</section>"
     "<section>"
     "<h2>GP6</h2>"
@@ -101,6 +107,12 @@ static const char button_config_response[] =
     "placeholder=\"http://192.168.0.10/action\">"
     "<label>POST body</label>"
     "<textarea name=\"b1_body\" maxlength=\"512\"></textarea>"
+    "<label>Content-Type</label>"
+    "<input name=\"b1_content_type\" maxlength=\"64\" "
+    "placeholder=\"application/json\">"
+    "<label>Headers</label>"
+    "<textarea name=\"b1_headers\" maxlength=\"384\" "
+    "placeholder=\"Authorization: Bearer token\"></textarea>"
     "</section>"
     "<button type=\"submit\">Save Buttons</button>"
     "</form>"
@@ -113,6 +125,9 @@ static const char button_config_response[] =
     "document.querySelector('[name=b'+i+'_method]').value=a.method;"
     "document.querySelector('[name=b'+i+'_url]').value=a.url||'';"
     "document.querySelector('[name=b'+i+'_body]').value=a.body||'';"
+    "document.querySelector('[name=b'+i+'_content_type]').value="
+    "a.content_type||'';"
+    "document.querySelector('[name=b'+i+'_headers]').value=a.headers||'';"
     "}"
     "async function loadConfig(){"
     "const r=await fetch('/api/config');"
@@ -658,12 +673,18 @@ static bool http_parse_action_config(const char *request,
         char method_name[16];
         char url_name[16];
         char body_name[16];
+        char content_type_name[24];
+        char headers_name[20];
         char method_value[16];
 
         snprintf(method_name, sizeof(method_name), "b%lu_method",
                  (unsigned long)i);
         snprintf(url_name, sizeof(url_name), "b%lu_url", (unsigned long)i);
         snprintf(body_name, sizeof(body_name), "b%lu_body", (unsigned long)i);
+        snprintf(content_type_name, sizeof(content_type_name),
+                 "b%lu_content_type", (unsigned long)i);
+        snprintf(headers_name, sizeof(headers_name), "b%lu_headers",
+                 (unsigned long)i);
 
         if (!http_param_value(body, method_name, method_value,
                               sizeof(method_value)) &&
@@ -686,7 +707,15 @@ static bool http_parse_action_config(const char *request,
                                        sizeof(candidate.button_actions[i].url)) ||
             !http_optional_param_value(body, query, body_name,
                                        candidate.button_actions[i].body,
-                                       sizeof(candidate.button_actions[i].body))) {
+                                       sizeof(candidate.button_actions[i].body)) ||
+            !http_optional_param_value(
+                body, query, content_type_name,
+                candidate.button_actions[i].content_type,
+                sizeof(candidate.button_actions[i].content_type)) ||
+            !http_optional_param_value(
+                body, query, headers_name,
+                candidate.button_actions[i].headers,
+                sizeof(candidate.button_actions[i].headers))) {
             return false;
         }
     }
@@ -762,6 +791,12 @@ static size_t http_build_config_response(char *response, size_t response_size,
         json_append_string(response, response_size, &length, action->url);
         http_append(response, response_size, &length, ",\"body\":");
         json_append_string(response, response_size, &length, action->body);
+        http_append(response, response_size, &length,
+                    ",\"content_type\":");
+        json_append_string(response, response_size, &length,
+                           action->content_type);
+        http_append(response, response_size, &length, ",\"headers\":");
+        json_append_string(response, response_size, &length, action->headers);
         http_append(response, response_size, &length, "}");
     }
 

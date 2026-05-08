@@ -23,6 +23,8 @@ Firmware for a Raspberry Pi Pico W macropad.
 - Button action URLs can target IPv4 addresses, normal DNS hostnames, or
   `.local` mDNS hostnames.
 - `POST` actions can include a JSON request body.
+- Button actions can include a configurable `Content-Type` for POST bodies and
+  custom HTTP headers, one `Name: value` header per line.
 - The setup page can scan nearby Wi-Fi access points and save an SSID/password
   to flash.
 - Configuration is saved to flash and loaded across boots.

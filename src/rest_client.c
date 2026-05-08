@@ -1,6 +1,7 @@
 #include "rest_client.h"
 
 #include <stdbool.h>
+#include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -24,7 +25,7 @@
 #define REST_CLIENT_MAX_CONNECTIONS APP_CONFIG_BUTTON_COUNT
 #define REST_CLIENT_HOST_MAX 64u
 #define REST_CLIENT_PATH_MAX 160u
-#define REST_CLIENT_REQUEST_MAX 896u
+#define REST_CLIENT_REQUEST_MAX 2048u
 #define REST_CLIENT_POLL_INTERVAL 10
 #define REST_CLIENT_TIMEOUT_POLLS 6
 #define REST_CLIENT_CONNECT_TIMEOUT_MS 15000
@@ -410,6 +411,59 @@ static err_t rest_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p,
     return ERR_OK;
 }
 
+static bool rest_request_append(char *request, size_t request_size,
+                                size_t *length, const char *format, ...) {
+    if (*length >= request_size) {
+        return false;
+    }
+
+    va_list args;
+    va_start(args, format);
+    const int written =
+        vsnprintf(request + *length, request_size - *length, format, args);
+    va_end(args);
+
+    if (written < 0 || (size_t)written >= request_size - *length) {
+        return false;
+    }
+
+    *length += (size_t)written;
+    return true;
+}
+
+static bool rest_request_append_headers(char *request, size_t request_size,
+                                        size_t *length,
+                                        const char *headers) {
+    const char *line = headers;
+
+    while (*line != '\0') {
+        const char *line_end = line;
+        while (*line_end != '\0' && *line_end != '\n' &&
+               *line_end != '\r') {
+            line_end++;
+        }
+
+        const size_t line_len = (size_t)(line_end - line);
+        if (line_len > 0u) {
+            if (*length + line_len + 2u >= request_size) {
+                return false;
+            }
+
+            memcpy(request + *length, line, line_len);
+            *length += line_len;
+            memcpy(request + *length, "\r\n", 2u);
+            *length += 2u;
+        }
+
+        while (*line_end == '\r' || *line_end == '\n') {
+            line_end++;
+        }
+        line = line_end;
+    }
+
+    return true;
+}
+
 static bool rest_build_request(rest_connection_t *connection) {
     const char *method = app_config_action_method_name(connection->action.method);
     const char *body =
@@ -427,54 +481,72 @@ static bool rest_build_request(rest_connection_t *connection) {
                  connection->url.host, (unsigned int)connection->url.port);
     }
 
-    int written = 0;
+    size_t length = 0;
+    if (!rest_request_append(connection->request, sizeof(connection->request),
+                             &length, "%s %s HTTP/1.1\r\n", method,
+                             connection->url.path) ||
+        !rest_request_append(connection->request, sizeof(connection->request),
+                             &length, "Host: %s\r\n", host_header) ||
+        !rest_request_append(connection->request, sizeof(connection->request),
+                             &length, "User-Agent: macropad-pico\r\n") ||
+        !rest_request_append(connection->request, sizeof(connection->request),
+                             &length, "Accept: */*\r\n")) {
+        goto request_too_large;
+    }
+
+    if (connection->action.headers[0] != '\0' &&
+        !rest_request_append_headers(connection->request,
+                                     sizeof(connection->request), &length,
+                                     connection->action.headers)) {
+        goto request_too_large;
+    }
+
     if (connection->action.method == APP_CONFIG_ACTION_POST &&
         body_len > 0u) {
-        written = snprintf(connection->request, sizeof(connection->request),
-                           "POST %s HTTP/1.1\r\n"
-                           "Host: %s\r\n"
-                           "User-Agent: macropad-pico\r\n"
-                           "Accept: */*\r\n"
-                           "Content-Type: application/json\r\n"
-                           "Content-Length: %lu\r\n"
-                           "Connection: close\r\n"
-                           "\r\n"
-                           "%s",
-                           connection->url.path, host_header,
-                           (unsigned long)body_len, body);
-    } else if (connection->action.method == APP_CONFIG_ACTION_POST) {
-        written = snprintf(connection->request, sizeof(connection->request),
-                           "POST %s HTTP/1.1\r\n"
-                           "Host: %s\r\n"
-                           "User-Agent: macropad-pico\r\n"
-                           "Accept: */*\r\n"
-                           "Connection: close\r\n"
-                           "\r\n",
-                           connection->url.path, host_header);
-    } else {
-        written = snprintf(connection->request, sizeof(connection->request),
-                           "GET %s HTTP/1.1\r\n"
-                           "Host: %s\r\n"
-                           "User-Agent: macropad-pico\r\n"
-                           "Accept: */*\r\n"
-                           "Connection: close\r\n"
-                           "\r\n",
-                           connection->url.path, host_header);
+        if (connection->action.content_type[0] != '\0' &&
+            !rest_request_append(connection->request,
+                                 sizeof(connection->request), &length,
+                                 "Content-Type: %s\r\n",
+                                 connection->action.content_type)) {
+            goto request_too_large;
+        }
+
+        if (!rest_request_append(connection->request,
+                                 sizeof(connection->request), &length,
+                                 "Content-Length: %lu\r\n",
+                                 (unsigned long)body_len)) {
+            goto request_too_large;
+        }
     }
 
-    if (written < 0 || (size_t)written >= sizeof(connection->request)) {
-        printf("rest: request too large button=%lu method=%s url='%s'\n",
-               (unsigned long)connection->button_index, method,
-               connection->action.url);
-        return false;
+    if (!rest_request_append(connection->request, sizeof(connection->request),
+                             &length, "Connection: close\r\n\r\n")) {
+        goto request_too_large;
     }
 
-    connection->request_len = (size_t)written;
-    printf("rest: built request button=%lu method=%s host='%s' body_len=%lu "
-           "bytes=%lu\n",
+    if (body_len > 0u) {
+        if (length + body_len >= sizeof(connection->request)) {
+            goto request_too_large;
+        }
+        memcpy(connection->request + length, body, body_len);
+        length += body_len;
+        connection->request[length] = '\0';
+    }
+
+    connection->request_len = length;
+    printf("rest: built request button=%lu method=%s host='%s' "
+           "content_type='%s' headers_len=%lu body_len=%lu bytes=%lu\n",
            (unsigned long)connection->button_index, method, host_header,
+           connection->action.content_type,
+           (unsigned long)strlen(connection->action.headers),
            (unsigned long)body_len, (unsigned long)connection->request_len);
     return true;
+
+request_too_large:
+    printf("rest: request too large button=%lu method=%s url='%s'\n",
+           (unsigned long)connection->button_index, method,
+           connection->action.url);
+    return false;
 }
 
 static uint16_t rest_dns_read_u16(const uint8_t *packet, size_t offset) {
