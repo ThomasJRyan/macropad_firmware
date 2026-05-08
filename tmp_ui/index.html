@@ -9,135 +9,161 @@
 <body>
 <main>
 <h1>Button Actions</h1>
-<form id="actions">
-<section>
-<h2>GP5</h2>
+<div class="config-shell">
+<section class="keypad-panel" aria-label="Macropad buttons">
+<div class="key-grid" id="key-grid">
+<button class="key is-active" type="button" data-index="0"><span>GP5</span><small>Disabled</small></button>
+<button class="key" type="button" data-index="1"><span>GP4</span><small>Disabled</small></button>
+<button class="key" type="button" data-index="2"><span>GP3</span><small>Disabled</small></button>
+<button class="key" type="button" data-index="3"><span>GP6</span><small>Disabled</small></button>
+<button class="key" type="button" data-index="4"><span>GP7</span><small>Disabled</small></button>
+<button class="key" type="button" data-index="5"><span>GP8</span><small>Disabled</small></button>
+</div>
+</section>
+<aside class="editor-panel">
+<form id="action-editor">
+<div class="editor-header">
+<h2 id="editor-title">GP5</h2>
+<span id="editor-state">Disabled</span>
+</div>
 <label>Method</label>
-<select name="b0_method">
+<select name="method">
 <option value="DISABLED">Disabled</option>
 <option value="GET">GET</option>
 <option value="POST">POST</option>
 </select>
 <label>URL</label>
-<input name="b0_url" maxlength="128" placeholder="http://192.168.0.10/action">
+<input name="url" maxlength="128" placeholder="http://192.168.0.10/action">
 <label>POST body</label>
-<textarea name="b0_body" maxlength="512"></textarea>
+<textarea name="body" maxlength="512"></textarea>
 <label>Content-Type</label>
-<input name="b0_content_type" maxlength="64" placeholder="application/json">
+<input name="content_type" maxlength="64" placeholder="application/json">
 <label>Headers</label>
-<textarea name="b0_headers" maxlength="384" placeholder="Authorization: Bearer token"></textarea>
-</section>
-<section>
-<h2>GP4</h2>
-<label>Method</label>
-<select name="b1_method">
-<option value="DISABLED">Disabled</option>
-<option value="GET">GET</option>
-<option value="POST">POST</option>
-</select>
-<label>URL</label>
-<input name="b1_url" maxlength="128" placeholder="http://192.168.0.10/action">
-<label>POST body</label>
-<textarea name="b1_body" maxlength="512"></textarea>
-<label>Content-Type</label>
-<input name="b1_content_type" maxlength="64" placeholder="application/json">
-<label>Headers</label>
-<textarea name="b1_headers" maxlength="384" placeholder="Authorization: Bearer token"></textarea>
-</section>
-<section>
-<h2>GP3</h2>
-<label>Method</label>
-<select name="b2_method">
-<option value="DISABLED">Disabled</option>
-<option value="GET">GET</option>
-<option value="POST">POST</option>
-</select>
-<label>URL</label>
-<input name="b2_url" maxlength="128" placeholder="http://192.168.0.10/action">
-<label>POST body</label>
-<textarea name="b2_body" maxlength="512"></textarea>
-<label>Content-Type</label>
-<input name="b2_content_type" maxlength="64" placeholder="application/json">
-<label>Headers</label>
-<textarea name="b2_headers" maxlength="384" placeholder="Authorization: Bearer token"></textarea>
-</section>
-<section>
-<h2>GP6</h2>
-<label>Method</label>
-<select name="b3_method">
-<option value="DISABLED">Disabled</option>
-<option value="GET">GET</option>
-<option value="POST">POST</option>
-</select>
-<label>URL</label>
-<input name="b3_url" maxlength="128" placeholder="http://192.168.0.10/action">
-<label>POST body</label>
-<textarea name="b3_body" maxlength="512"></textarea>
-<label>Content-Type</label>
-<input name="b3_content_type" maxlength="64" placeholder="application/json">
-<label>Headers</label>
-<textarea name="b3_headers" maxlength="384" placeholder="Authorization: Bearer token"></textarea>
-</section>
-<section>
-<h2>GP7</h2>
-<label>Method</label>
-<select name="b4_method">
-<option value="DISABLED">Disabled</option>
-<option value="GET">GET</option>
-<option value="POST">POST</option>
-</select>
-<label>URL</label>
-<input name="b4_url" maxlength="128" placeholder="http://192.168.0.10/action">
-<label>POST body</label>
-<textarea name="b4_body" maxlength="512"></textarea>
-<label>Content-Type</label>
-<input name="b4_content_type" maxlength="64" placeholder="application/json">
-<label>Headers</label>
-<textarea name="b4_headers" maxlength="384" placeholder="Authorization: Bearer token"></textarea>
-</section>
-<section>
-<h2>GP8</h2>
-<label>Method</label>
-<select name="b5_method">
-<option value="DISABLED">Disabled</option>
-<option value="GET">GET</option>
-<option value="POST">POST</option>
-</select>
-<label>URL</label>
-<input name="b5_url" maxlength="128" placeholder="http://192.168.0.10/action">
-<label>POST body</label>
-<textarea name="b5_body" maxlength="512"></textarea>
-<label>Content-Type</label>
-<input name="b5_content_type" maxlength="64" placeholder="application/json">
-<label>Headers</label>
-<textarea name="b5_headers" maxlength="384" placeholder="Authorization: Bearer token"></textarea>
-</section>
-<button type="submit">Save Buttons</button>
+<textarea name="headers" maxlength="384" placeholder="Authorization: Bearer token"></textarea>
+<button type="submit">Save Button</button>
 </form>
+</aside>
+</div>
 <p id="status"></p>
 </main>
 <script>
-const s=document.getElementById('status');
-function status(t){s.textContent=t;}
-function setAction(i,a){
-document.querySelector('[name=b'+i+'_method]').value=a.method;
-document.querySelector('[name=b'+i+'_url]').value=a.url||'';
-document.querySelector('[name=b'+i+'_body]').value=a.body||'';
-document.querySelector('[name=b'+i+'_content_type]').value=a.content_type||'';
-document.querySelector('[name=b'+i+'_headers]').value=a.headers||'';
+const pins=[5,4,3,6,7,8];
+const keys=[...document.querySelectorAll('.key')];
+const form=document.getElementById('action-editor');
+const statusEl=document.getElementById('status');
+let selectedIndex=0;
+let actions=pins.map(pin=>defaultAction(pin));
+
+function defaultAction(pin){
+return {pin,method:'DISABLED',url:'',body:'',content_type:'',headers:''};
 }
-async function loadConfig(){
-const r=await fetch('/api/config');
-const c=await r.json();
-c.buttons.forEach((a,i)=>setAction(i,a));
+
+function normalizeAction(action,pin){
+return {
+pin,
+method: action && action.method ? action.method : 'DISABLED',
+url: action && action.url ? action.url : '',
+body: action && action.body ? action.body : '',
+content_type: action && action.content_type ? action.content_type : '',
+headers: action && action.headers ? action.headers : ''
+};
 }
-document.getElementById('actions').addEventListener('submit',async function(e){
-e.preventDefault();
-const r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams(new FormData(this))});
-status(r.ok?'Buttons saved':'Button save failed');
-if(r.ok)loadConfig();
+
+function status(text){
+statusEl.textContent=text;
+}
+
+function methodLabel(action){
+return action.method==='DISABLED'?'Disabled':action.method;
+}
+
+function renderKeys(){
+keys.forEach((key,index)=>{
+const action=actions[index];
+key.classList.toggle('is-active',index===selectedIndex);
+key.dataset.method=action.method.toLowerCase();
+key.querySelector('small').textContent=methodLabel(action);
 });
-loadConfig();
+}
+
+function loadEditor(){
+const action=actions[selectedIndex];
+document.getElementById('editor-title').textContent='GP'+pins[selectedIndex];
+document.getElementById('editor-state').textContent=methodLabel(action);
+form.elements.method.value=action.method;
+form.elements.url.value=action.url;
+form.elements.body.value=action.body;
+form.elements.content_type.value=action.content_type;
+form.elements.headers.value=action.headers;
+}
+
+function collectEditor(){
+actions[selectedIndex]={
+pin:pins[selectedIndex],
+method:form.elements.method.value,
+url:form.elements.url.value,
+body:form.elements.body.value,
+content_type:form.elements.content_type.value,
+headers:form.elements.headers.value
+};
+renderKeys();
+loadEditor();
+}
+
+function payload(){
+const params=new URLSearchParams();
+actions.forEach((action,index)=>{
+params.set('b'+index+'_method',action.method);
+params.set('b'+index+'_url',action.url);
+params.set('b'+index+'_body',action.body);
+params.set('b'+index+'_content_type',action.content_type);
+params.set('b'+index+'_headers',action.headers);
+});
+return params;
+}
+
+async function loadConfig(){
+const response=await fetch('/api/config');
+const config=await response.json();
+if(Array.isArray(config.buttons)){
+config.buttons.forEach((action,index)=>{
+const pinIndex=pins.indexOf(action.pin);
+const target=pinIndex>=0?pinIndex:index;
+if(target>=0&&target<actions.length){
+actions[target]=normalizeAction(action,pins[target]);
+}
+});
+}
+renderKeys();
+loadEditor();
+}
+
+keys.forEach(key=>{
+key.addEventListener('click',()=>{
+collectEditor();
+selectedIndex=Number(key.dataset.index);
+renderKeys();
+loadEditor();
+});
+});
+
+form.elements.method.addEventListener('change',collectEditor);
+
+form.addEventListener('submit',async event=>{
+event.preventDefault();
+collectEditor();
+const response=await fetch('/api/config',{
+method:'POST',
+headers:{'Content-Type':'application/x-www-form-urlencoded'},
+body:payload()
+});
+status(response.ok?'Button saved':'Button save failed');
+if(response.ok)loadConfig();
+});
+
+renderKeys();
+loadEditor();
+loadConfig().catch(()=>status('Config load failed'));
 </script>
 </body>
 </html>
