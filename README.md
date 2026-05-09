@@ -1,4 +1,4 @@
-# macropad_3
+# Alien Macropad Firmware
 
 Firmware for a Raspberry Pi Pico W macropad.
 
@@ -66,10 +66,10 @@ cmake --build build
 The Pico W UF2 firmware is generated at:
 
 ```text
-build/macropad_3.uf2
+build/alien_macropad_firmware.uf2
 ```
 
 ## Upload
 
 Hold the Pico W `BOOTSEL` button while connecting it over USB, then copy
-`build/macropad_3.uf2` to the mounted bootloader drive.
+`build/alien_macropad_firmware.uf2` to the mounted bootloader drive.

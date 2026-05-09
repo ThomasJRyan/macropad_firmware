@@ -12,7 +12,7 @@
 int main(void) {
     stdio_init_all();
 
-    printf("boot: macropad firmware starting\n");
+    printf("boot: Alien Macropad Firmware starting\n");
     fflush(stdout);
 
     app_config_init();

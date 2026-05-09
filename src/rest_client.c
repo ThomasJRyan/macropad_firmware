@@ -527,7 +527,8 @@ static bool rest_build_request(rest_connection_t *connection) {
         !rest_request_append(connection->request, sizeof(connection->request),
                              &length, "Host: %s\r\n", host_header) ||
         !rest_request_append(connection->request, sizeof(connection->request),
-                             &length, "User-Agent: macropad-pico\r\n") ||
+                             &length,
+                             "User-Agent: alien-macropad-firmware\r\n") ||
         !rest_request_append(connection->request, sizeof(connection->request),
                              &length, "Accept: */*\r\n")) {
         goto request_too_large;

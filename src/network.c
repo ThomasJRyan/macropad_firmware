@@ -1417,7 +1417,7 @@ static err_t mdns_server_start(void) {
     }
 
     const s8_t service = mdns_resp_add_service(
-        netif, "Macropad", "_http", DNSSD_PROTO_TCP, HTTP_PORT,
+        netif, "Alien Macropad Firmware", "_http", DNSSD_PROTO_TCP, HTTP_PORT,
         mdns_http_txt, NULL);
     (void)service;
 

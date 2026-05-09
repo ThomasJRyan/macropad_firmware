@@ -2,7 +2,8 @@
 
 ## Project Overview
 
-This repository contains firmware for a Raspberry Pi Pico W macropad.
+This repository contains Alien Macropad Firmware for a Raspberry Pi Pico W
+macropad.
 
 The firmware must be written in C and built into a `.uf2` binary suitable for
 uploading to the Pico W.
@@ -50,7 +51,7 @@ cmake --build build
 The expected UF2 path is:
 
 ```sh
-build/macropad_3.uf2
+build/alien_macropad_firmware.uf2
 ```
 
 ### Flashing With Picotool
@@ -58,7 +59,7 @@ build/macropad_3.uf2
 Use the locally built USB-capable `picotool` binary:
 
 ```sh
-build/picotool-usb/picotool load -f -x -v build/macropad_3.uf2
+build/picotool-usb/picotool load -f -x -v build/alien_macropad_firmware.uf2
 ```
 
 Important flags:
@@ -80,7 +81,7 @@ If `picotool` behavior is suspect, hold BOOTSEL while plugging in the Pico W and
 copy the UF2 manually:
 
 ```sh
-mkdir -p /tmp/pico && sudo mount /dev/disk/by-label/RPI-RP2 /tmp/pico && sudo cp build/macropad_3.uf2 /tmp/pico/ && sync
+mkdir -p /tmp/pico && sudo mount /dev/disk/by-label/RPI-RP2 /tmp/pico && sudo cp build/alien_macropad_firmware.uf2 /tmp/pico/ && sync
 ```
 
 Use this fallback to confirm that a firmware image itself works before debugging
