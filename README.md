@@ -77,7 +77,12 @@ Configuration is saved to flash and persists across reboots.
 On Ubuntu/Debian:
 
 ```sh
-sudo apt-get install cmake gcc-arm-none-eabi libnewlib-arm-none-eabi ninja-build
+sudo apt-get install \
+  cmake \
+  gcc-arm-none-eabi \
+  libnewlib-arm-none-eabi \
+  libstdc++-arm-none-eabi-dev \
+  ninja-build
 ```
 
 ### Set Up The Repository
