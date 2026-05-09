@@ -81,7 +81,6 @@ sudo apt-get install \
   cmake \
   gcc-arm-none-eabi \
   libnewlib-arm-none-eabi \
-  libstdc++-arm-none-eabi-dev \
   ninja-build
 ```
 

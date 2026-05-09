@@ -24,6 +24,10 @@ add_executable(${FIRMWARE_TARGET}
     src/rest_client.c
 )
 
+set_target_properties(${FIRMWARE_TARGET} PROPERTIES
+    LINKER_LANGUAGE C
+)
+
 target_include_directories(${FIRMWARE_TARGET} PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}/src
     ${PICO_SDK_PATH}/lib/tinyusb/lib/networking
@@ -39,6 +43,9 @@ target_compile_definitions(${FIRMWARE_TARGET} PRIVATE
     PICO_DEFAULT_UART_TX_PIN=0
     PICO_DEFAULT_UART_RX_PIN=1
     PICO_DEFAULT_UART_BAUD_RATE=115200
+    # This firmware is C-only. pico_runtime still pulls in pico_cxx_options;
+    # disable the SDK new/delete overrides so CI does not require Arm libstdc++.
+    PICO_CXX_DISABLE_ALLOCATION_OVERRIDES=1
 )
 
 target_link_libraries(${FIRMWARE_TARGET}

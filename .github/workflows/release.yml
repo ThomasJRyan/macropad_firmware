@@ -38,7 +38,6 @@ jobs:
             cmake \
             gcc-arm-none-eabi \
             libnewlib-arm-none-eabi \
-            libstdc++-arm-none-eabi-dev \
             libusb-1.0-0-dev \
             ninja-build \
             pkg-config
