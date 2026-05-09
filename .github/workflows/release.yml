@@ -1,0 +1,77 @@
+name: Firmware Release
+
+on:
+  push:
+    tags:
+      - "v[0-9]*.[0-9]*.[0-9]*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-test-release:
+    name: Build, test, and release UF2
+    runs-on: ubuntu-latest
+    env:
+      FIRMWARE_TARGET: alien_macropad_firmware
+      UF2_PATH: build/alien_macropad_firmware.uf2
+      UF2_NAME: alien_macropad_firmware.uf2
+
+    steps:
+      - name: Validate semantic version tag
+        run: |
+          if [[ ! "${GITHUB_REF_NAME}" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} is not a semantic version tag like v1.0.0"
+            exit 1
+          fi
+
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Install firmware toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake \
+            gcc-arm-none-eabi \
+            libnewlib-arm-none-eabi \
+            libusb-1.0-0-dev \
+            ninja-build \
+            pkg-config
+
+      - name: Configure firmware
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build firmware
+        run: cmake --build build --target "${FIRMWARE_TARGET}" --parallel
+
+      - name: Run tests
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Verify UF2 artifact
+        run: test -s "${UF2_PATH}"
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          prerelease_flag=()
+          if [[ "${TAG}" == *-* ]]; then
+            prerelease_flag=(--prerelease)
+          fi
+
+          asset="${UF2_PATH}#${UF2_NAME}"
+
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            gh release upload "${TAG}" "${asset}" --clobber
+          else
+            gh release create "${TAG}" "${asset}" \
+              --verify-tag \
+              --title "${TAG}" \
+              --generate-notes \
+              "${prerelease_flag[@]}"
+          fi

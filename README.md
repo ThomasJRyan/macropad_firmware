@@ -73,3 +73,15 @@ build/alien_macropad_firmware.uf2
 
 Hold the Pico W `BOOTSEL` button while connecting it over USB, then copy
 `build/alien_macropad_firmware.uf2` to the mounted bootloader drive.
+
+## Release
+
+GitHub Actions publishes firmware releases from semantic version tags.
+
+```sh
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+The release workflow builds the firmware, runs `ctest`, and uploads
+`alien_macropad_firmware.uf2` to GitHub Release `v1.0.0`.

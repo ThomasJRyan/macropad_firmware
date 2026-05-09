@@ -140,6 +140,19 @@ actually flashed. A manual BOOTSEL copy is a useful control test.
 - Prefer small, focused modules for device setup, input scanning, HID behavior,
   and wireless functionality.
 
+## Release Workflow
+
+The GitHub Actions workflow at `.github/workflows/release.yml` runs when a
+semantic version tag such as `v1.0.0` is pushed.
+
+The workflow:
+
+- Checks out recursive submodules, including the Pico SDK.
+- Installs the Arm embedded toolchain.
+- Builds the `alien_macropad_firmware` CMake target.
+- Runs `ctest` from the build directory.
+- Uploads `build/alien_macropad_firmware.uf2` to the matching GitHub Release.
+
 ## Commit Policy
 
 All changes, fixes, and features require a Git commit.
