@@ -22,7 +22,7 @@
 #include "pico/cyw43_arch.h"
 #include "pico/time.h"
 
-#define REST_CLIENT_MAX_CONNECTIONS APP_CONFIG_BUTTON_COUNT
+#define REST_CLIENT_MAX_CONNECTIONS 3u
 #define REST_CLIENT_HOST_MAX 64u
 #define REST_CLIENT_PATH_MAX 160u
 #define REST_CLIENT_REQUEST_MAX 2048u
@@ -1102,9 +1102,13 @@ static void rest_burst_start_next_locked(size_t button_index) {
         return;
     }
 
-    const app_config_t config = app_config_get();
-    const app_config_button_action_t action =
-        config.button_actions[button_index];
+    app_config_button_action_t action;
+    if (!app_config_get_button_action(button_index, &action)) {
+        sequence->active = false;
+        printf("rest: burst stopped button=%lu action unavailable\n",
+               (unsigned long)button_index);
+        return;
+    }
     if (action.method == APP_CONFIG_ACTION_DISABLED ||
         action.url_count == 0u) {
         sequence->active = false;
@@ -1210,9 +1214,12 @@ void rest_client_trigger(size_t button_index) {
         return;
     }
 
-    const app_config_t config = app_config_get();
-    const app_config_button_action_t action =
-        config.button_actions[button_index];
+    app_config_button_action_t action;
+    if (!app_config_get_button_action(button_index, &action)) {
+        printf("rest: button=%lu action unavailable\n",
+               (unsigned long)button_index);
+        return;
+    }
 
     if (action.method == APP_CONFIG_ACTION_DISABLED) {
         printf("rest: button=%lu disabled\n", (unsigned long)button_index);
