@@ -3,6 +3,8 @@
 Firmware for a Raspberry Pi Pico W macropad that turns physical button presses
 into configurable HTTP requests.
 
+![Alien Macropad Firmware UI preview](ui.png)
+
 The firmware artifact is:
 
 ```text
